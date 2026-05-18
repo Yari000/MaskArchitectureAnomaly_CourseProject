@@ -8,6 +8,7 @@ import torch
 
 from PIL import Image
 
+# Cityscapes color encoding for visualization (labelIds to RGB colors), since the color encoding is based on labelIds and not trainIds.
 def colormap_cityscapes(n):
     cmap=np.zeros([n, 3]).astype(np.uint8)
     cmap[0,:] = np.array([128, 64,128])
@@ -37,6 +38,8 @@ def colormap_cityscapes(n):
     return cmap
 
 
+# The colormap function generates a color map for visualizing segmentation results. 
+# It creates an array of shape (n, 3) where n is the number of classes and each row corresponds to the RGB color for that class.
 def colormap(n):
     cmap=np.zeros([n, 3]).astype(np.uint8)
 
@@ -52,6 +55,7 @@ def colormap(n):
 
     return cmap
 
+# The Relabel class is a transformation that takes an input tensor and replaces all occurrences of a specified old label (olabel) with a new label (nlabel).
 class Relabel:
 
     def __init__(self, olabel, nlabel):
@@ -64,12 +68,14 @@ class Relabel:
         return tensor
 
 
+# The ToLabel class is a transformation that converts a PIL image to a PyTorch tensor of type long, where each pixel value corresponds to the class label for that pixel.
 class ToLabel:
 
     def __call__(self, image):
         return torch.from_numpy(np.array(image)).long().unsqueeze(0)
 
 
+# The Colorize class is a transformation that takes a grayscale image and converts it to a color image using a specified color map.
 class Colorize:
 
     def __init__(self, n=22):

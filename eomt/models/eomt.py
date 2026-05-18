@@ -52,6 +52,7 @@ class EoMT(nn.Module):
             *[ScaleBlock(self.encoder.backbone.embed_dim) for _ in range(num_upscale)],
         )
 
+    # predict masks and classes from the query tokens and the image tokens
     def _predict(self, x: torch.Tensor):
         q = x[:, : self.num_q, :]
 
@@ -68,6 +69,7 @@ class EoMT(nn.Module):
 
         return mask_logits, class_logits
 
+    # disable attention to certain queries with a given probability to encourage the model to use all queries and not rely on a subset of them
     @torch.compiler.disable
     def _disable_attn_mask(self, attn_mask, prob):
         if prob < 1:
@@ -81,6 +83,8 @@ class EoMT(nn.Module):
 
         return attn_mask
 
+    # compute attention with optional mask and rope embeddings, 
+    # rope embeddings are used to encode the relative position of the tokens, and the mask is used to disable attention to certain tokens based on the predicted masks
     def _attn(
         self,
         module: nn.Module,
@@ -118,6 +122,8 @@ class EoMT(nn.Module):
 
         return x
 
+    # compute the attention mask based on the predicted masks, the attention mask is a boolean tensor that indicates which tokens can attend to which other tokens,
+    # is used to disable attention to certain tokens based on the predicted masks
     def _attn_mask(self, x: torch.Tensor, mask_logits: torch.Tensor, i: int):
         attn_mask = torch.ones(
             x.shape[0],
@@ -147,6 +153,8 @@ class EoMT(nn.Module):
         )
         return attn_mask
 
+    # forward pass through the model, the input is normalized and passed through the backbone, at each block the attention mask is computed based on the predicted masks
+    # and used to compute the attention, the predicted masks and classes are collected for each block and returned at the end
     def forward(self, x: torch.Tensor):
         x = (x - self.encoder.pixel_mean) / self.encoder.pixel_std
 
@@ -202,3 +210,9 @@ class EoMT(nn.Module):
             mask_logits_per_layer,
             class_logits_per_layer,
         )
+
+    # The model returns a list of predicted masks and classes for each block, the predicted masks are used to compute the attention mask 
+    # for the next block, and the predicted classes are used to compute the loss for the classification task 
+    # In the evaluation phase the predicted masks and classes can be used to compute the metrics for the segmentation and classification tasks respectively
+    # For example if one wanted to compute MSP (or the anomaly score) one could use the predicted masks to compute the mean mask confidence across all queries and blocks
+    # then use that as the anomaly score, or one could use the predicted classes to compute the classification accuracy for the normal and anomalous samples

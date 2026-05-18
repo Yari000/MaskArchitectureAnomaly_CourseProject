@@ -12,6 +12,8 @@ from torch.utils.data import Dataset
 
 EXTENSIONS = ['.jpg', '.png']
 
+# This file contains the dataset loaders for VOC12 and Cityscapes, which are implemented as subclasses of torch.utils.data.Dataset.
+
 def load_image(file):
     return Image.open(file)
 
@@ -30,6 +32,8 @@ def image_path_city(root, name):
 def image_basename(filename):
     return os.path.basename(os.path.splitext(filename)[0])
 
+# The VOC12 class is a dataset loader for the VOC12 dataset, which loads images and their corresponding labels from specified directories, 
+# applies optional transformations to the input images and target labels, and returns them as tensors when accessed by index.
 class VOC12(Dataset):
 
     def __init__(self, root, input_transform=None, target_transform=None):
@@ -62,6 +66,7 @@ class VOC12(Dataset):
         return len(self.filenames)
 
 
+# The cityscapes class is a dataset loader for the Cityscapes dataset, which loads images and their corresponding labels from specified directories,
 class cityscapes(Dataset):
 
     def __init__(self, root, input_transform=None, target_transform=None, subset='val'):

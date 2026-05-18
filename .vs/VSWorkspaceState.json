@@ -1,0 +1,14 @@
+{
+  "ExpandedNodes": [
+    "",
+    "\\eomt",
+    "\\eomt\\configs",
+    "\\eomt\\configs\\dinov2",
+    "\\eomt\\configs\\dinov2\\cityscapes",
+    "\\eomt\\configs\\dinov2\\cityscapes\\semantic",
+    "\\eomt\\models",
+    "\\eval"
+  ],
+  "SelectedNode": "\\eomt\\configs\\dinov2\\cityscapes\\semantic\\eomt_base_640.yaml",
+  "PreviewInSolutionExplorer": false
+}

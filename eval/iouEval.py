@@ -5,6 +5,7 @@
 
 import torch
 
+# Class to calculate IoU (mean and per-class) in a dataset, given the predictions and targets.
 class iouEval:
 
     def __init__(self, nClasses, ignoreIndex=19):
@@ -12,6 +13,7 @@ class iouEval:
         self.ignoreIndex = ignoreIndex if nClasses>ignoreIndex else -1 #if ignoreIndex is larger than nClasses, consider no ignoreIndex
         self.reset()
 
+    # Resets the true positive, false positive, and false negative counts for each class to zero. This is typically called at the beginning of a new evaluation
     def reset (self):
         classes = self.nClasses if self.ignoreIndex==-1 else self.nClasses-1
         self.tp = torch.zeros(classes).double()
@@ -68,13 +70,17 @@ class iouEval:
         self.fp += fp.double().cpu()
         self.fn += fn.double().cpu()
 
+    # Calculates the Intersection over Union (IoU) for each class and the mean IoU across all classes. 
+    # The IoU is calculated as the ratio of true positives to the sum of true positives, false positives, and false negatives for each class. 
+    # The method returns the mean IoU and the IoU for each class as a tuple. The mean IoU is a common metric used to evaluate the performance of semantic segmentation models, 
+    # while the per-class IoU provides insights into how well the model is performing on each individual class.
     def getIoU(self):
         num = self.tp
         den = self.tp + self.fp + self.fn + 1e-15
         iou = num / den
         return torch.mean(iou), iou     #returns "iou mean", "iou per class"
 
-# Class for colors
+# These codes are used to change the color of the text output based on the value of the IoU for each class, for an easier visual interpretation.
 class colors:
     RED       = '\033[31;1m'
     GREEN     = '\033[32;1m'

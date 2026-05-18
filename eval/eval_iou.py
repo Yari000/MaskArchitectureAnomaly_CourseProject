@@ -26,6 +26,7 @@ from iouEval import iouEval, getColorEntry
 NUM_CHANNELS = 3
 NUM_CLASSES = 20
 
+
 image_transform = ToPILImage()
 input_transform_cityscapes = Compose([
     Resize(512, Image.BILINEAR),
@@ -74,9 +75,12 @@ def main(args):
         print ("Error: datadir could not be loaded")
 
 
+    # The DataLoader is responsible for loading the dataset and applying the necessary transformations to the input images and target labels
     loader = DataLoader(cityscapes(args.datadir, input_transform_cityscapes, target_transform_cityscapes, subset=args.subset), num_workers=args.num_workers, batch_size=args.batch_size, shuffle=False)
 
-
+    # The iouEval class is used to calculate the Intersection over Union (IoU) metric for evaluating the performance of the model on the dataset.
+    # It takes the number of classes as an argument and provides methods to add batches of predictions and labels, and to calculate the IoU for each class and the mean IoU.
+    # The iouEvalVal object is an instance of the iouEval class that will be used to accumulate the predictions and labels for the validation set and calculate the IoU metrics at the end of the evaluation loop.
     iouEvalVal = iouEval(NUM_CLASSES)
 
     start = time.time()

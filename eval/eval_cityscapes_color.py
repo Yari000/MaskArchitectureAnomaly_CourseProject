@@ -38,6 +38,7 @@ target_transform_cityscapes = Compose([
     Relabel(255, 19),   #ignore label to 19
 ])
 
+# Cityscapes trainIds to labelIds for visualization (relabeling), since the color encoding is based on labelIds and not trainIds.
 cityscapes_trainIds2labelIds = Compose([
     Relabel(19, 255),  
     Relabel(18, 33),
@@ -65,6 +66,7 @@ cityscapes_trainIds2labelIds = Compose([
 
 def main(args):
 
+    # Load the model and weights
     modelpath = args.loadDir + args.loadModel
     weightspath = args.loadDir + args.loadWeights
 

@@ -19,6 +19,9 @@ from transform import Relabel, ToLabel, Colorize
 import torch.backends.cudnn as cudnn
 cudnn.benchmark = True
 
+
+# The main function initializes the ERFNet model, moves it to the GPU if available, and sets it to evaluation mode, then 
+# it generates random input images and measures the time taken for the forward pass of the model, printing the average time per image after each iteration.
 def main(args):
     model = ERFNet(19)
     if (not args.cpu):

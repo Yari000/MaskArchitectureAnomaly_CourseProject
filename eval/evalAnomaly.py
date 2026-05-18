@@ -9,7 +9,7 @@ import numpy as np
 from erfnet import ERFNet
 import os.path as osp
 from argparse import ArgumentParser
-from ood_metrics import fpr_at_95_tpr, calc_metrics, plot_roc, plot_pr,plot_barcode
+from ood_metrics import fpr_at_95_tpr, calc_metrics, plot_roc, plot_pr, plot_barcode
 from sklearn.metrics import roc_auc_score, roc_curve, auc, precision_recall_curve, average_precision_score
 from torchvision.transforms import Compose, Resize, ToTensor, Normalize
 
@@ -60,6 +60,8 @@ def main():
     parser.add_argument('--cpu', action='store_true')
     args = parser.parse_args()
     anomaly_score_list = []
+    anomaly_score_list_logit = []
+    anomaly_score_list_entropy = []
     ood_gts_list = []
 
     if not os.path.exists('results.txt'):
@@ -72,8 +74,12 @@ def main():
     print ("Loading model: " + modelpath)
     print ("Loading weights: " + weightspath)
 
+    # Import the model architecture 
+    # NUM_CLASSES is set to 20 cuz the model was trained on Cityscapes
     model = ERFNet(NUM_CLASSES)
 
+    # Load the model weights and set the model to evaluation mode.
+    # The weights are loaded using a custom function that handles cases where not all elements of the state dictionary are present in the model.
     if (not args.cpu):
         model = torch.nn.DataParallel(model).cuda()
 
@@ -94,13 +100,30 @@ def main():
     print ("Model and weights LOADED successfully")
     model.eval()
     
+    # Upload the images, apply unsqueeze to add a batch dimension, and permute the dimensions to match 
+    # the expected input format of the model (batch_size, channels, height, width).
+
     for path in glob.glob(os.path.expanduser(str(args.input[0]))):
         print(path)
         images = input_transform((Image.open(path).convert('RGB'))).unsqueeze(0).float().cuda()
         images = images.permute(0,3,1,2)
         with torch.no_grad():
             result = model(images)
-        anomaly_result = 1.0 - np.max(result.squeeze(0).data.cpu().numpy(), axis=0)            
+
+        # The anomaly score is calculated as 1 minus the maximum value of the model's output for each pixel
+        # Anomaly score here is computed via MSP (Maximum Softmax Probability) method
+        probs= torch.nn.Softmax(dim=1)(result)
+        anomaly_result = 1.0 - torch.max(probs, dim=1)[0]          
+        
+        # MaxLogits version
+        anomaly_result_logit = -torch.max(result, dim=1)[0]
+
+        # Entropy version
+        anomaly_result_entropy = -torch.sum(probs * torch.log(probs + 1e-8), dim=1)
+
+        # The path to the ground truth mask is constructed by replacing the "images" directory in the input path with "labels_masks" 
+        # and changing the file extension to match the format of the ground truth masks for each dataset.
+        # Ground truth maske are used to evaluate the performance of the anomaly detection by comparing the predicted anomaly scores with the actual anomalies present in the images.
         pathGT = path.replace("images", "labels_masks")                
         if "RoadObsticle21" in pathGT:
            pathGT = pathGT.replace("webp", "png")
@@ -130,34 +153,66 @@ def main():
         else:
              ood_gts_list.append(ood_gts)
              anomaly_score_list.append(anomaly_result)
-        del result, anomaly_result, ood_gts, mask
+             anomaly_score_list_logit.append(anomaly_result_logit)
+             anomaly_score_list_entropy.append(anomaly_result_entropy)
+        del result, anomaly_result, anomaly_result_logit, anomaly_result_entropy, ood_gts, mask
         torch.cuda.empty_cache()
 
+    # After processing all the images, the collected ground truth masks and anomaly scores are converted into NumPy arrays for further analysis.
     file.write( "\n")
 
     ood_gts = np.array(ood_gts_list)
     anomaly_scores = np.array(anomaly_score_list)
+    anomaly_scores_logit = np.array(anomaly_score_list_logit)
+    anomaly_scores_entropy = np.array(anomaly_score_list_entropy)
 
+    # The ground truth masks are used to create binary masks for in-distribution (ID) and out-of-distribution (OOD) samples.
     ood_mask = (ood_gts == 1)
     ind_mask = (ood_gts == 0)
 
+    # The anomaly scores for OOD and ID samples are extracted using the respective masks, and corresponding labels are created (1 for OOD and 0 for ID).
     ood_out = anomaly_scores[ood_mask]
     ind_out = anomaly_scores[ind_mask]
+    ood_out_logit = anomaly_scores_logit[ood_mask]
+    ind_out_logit = anomaly_scores_logit[ind_mask]
+    ood_out_entropy = anomaly_scores_entropy[ood_mask]
+    ind_out_entropy = anomaly_scores_entropy[ind_mask]
 
     ood_label = np.ones(len(ood_out))
     ind_label = np.zeros(len(ind_out))
+    ood_label_logit = np.ones(len(ood_out_logit))
+    ind_label_logit = np.zeros(len(ind_out_logit))
+    ood_label_entropy = np.ones(len(ood_out_entropy))
+    ind_label_entropy = np.zeros(len(ind_out_entropy))
     
     val_out = np.concatenate((ind_out, ood_out))
     val_label = np.concatenate((ind_label, ood_label))
+    val_out_logit = np.concatenate((ind_out_logit, ood_out_logit))
+    val_label_logit = np.concatenate((ind_label_logit, ood_label_logit))
+    val_out_entropy = np.concatenate((ind_out_entropy, ood_out_entropy))
+    val_label_entropy = np.concatenate((ind_label_entropy, ood_label_entropy))
 
+    # The performance of the anomaly detection is evaluated using two metrics: 
+    # the area under the precision-recall curve (AUPRC) and the false positive rate at 95% true positive rate (FPR@TPR95).
     prc_auc = average_precision_score(val_label, val_out)
     fpr = fpr_at_95_tpr(val_out, val_label)
+    prc_auc_logit = average_precision_score(val_label_logit, val_out_logit)
+    fpr_logit = fpr_at_95_tpr(val_out_logit, val_label_logit)
+    prc_auc_entropy = average_precision_score(val_label_entropy, val_out_entropy)
+    fpr_entropy = fpr_at_95_tpr(val_out_entropy, val_label_entropy)
 
     print(f'AUPRC score: {prc_auc*100.0}')
     print(f'FPR@TPR95: {fpr*100.0}')
+    print(f'AUPRC score (logit): {prc_auc_logit*100.0}')
+    print(f'FPR@TPR95 (logit): {fpr_logit*100.0}')
+    print(f'AUPRC score (entropy): {prc_auc_entropy*100.0}')
+    print(f'FPR@TPR95 (entropy): {fpr_entropy*100.0}')
 
-    file.write(('    AUPRC score:' + str(prc_auc*100.0) + '   FPR@TPR95:' + str(fpr*100.0) ))
+    file.write(('    AUPRC score:' + str(prc_auc*100.0) + '   FPR@TPR95:' + str(fpr*100.0) +  '    AUPRC (logit) score:' + str(prc_auc_logit*100.0) + '   FPR@TPR95 (logit):' + str(fpr_logit*100.0) + '    AUPRC (entropy) score:' + str(prc_auc_entropy*100.0) + '   FPR@TPR95 (entropy):' + str(fpr_entropy*100.0)))
     file.close()
 
 if __name__ == '__main__':
     main()
+
+# The code is designed to evaluate the performance of an anomaly detection model (ERFNet) on a dataset of images. It processes each image, computes anomaly scores, 
+# and compares them against ground truth masks to calculate performance metrics such as AUPRC and FPR@TPR95. The results are printed and saved to a text file for further analysis.
