@@ -53,8 +53,8 @@ def get_logits(image_path):
 
 
 # Example usage
-normal_image_path = "../Validation_Dataset/fs_static/images/2.jpg"
-anomalous_image_path = "..s/Validation_Dataset/RoadAnomaly21/images/8.png"
+normal_image_path = "/Users/andrealops/Downloads/Validation_Dataset/fs_static/images/2.jpg"
+anomalous_image_path = "/Users/andrealops/Downloads/Validation_Dataset/RoadAnomaly21/images/8.png"
 normal_logits = get_logits(normal_image_path)
 anomalous_logits = get_logits(anomalous_image_path)
 
