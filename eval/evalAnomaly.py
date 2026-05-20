@@ -112,15 +112,7 @@ def main():
        print("Esempio:", paths[0])
     else:
     # Prova a listare la directory padre per capire cosa c'è
-    parent = os.path.dirname(pattern)
-    if os.path.exists(parent):
-        print("Contenuto della cartella:", os.listdir(parent))
-    else:
-        print("La cartella non esiste:", parent)
-    paths = glob.glob(os.path.expanduser(str(args.input[0])))
-    if not paths:
-       print("ERRORE: nessuna immagine trovata con il pattern:", args.input[0])
-    return
+       parent = os.path.dirname(pattern)
     
     for path in glob.glob(os.path.expanduser(str(args.input[0]))):
         print(path)
@@ -175,9 +167,9 @@ def main():
             continue              
         else:
              ood_gts_list.append(ood_gts)
-             anomaly_score_list.append(anomaly_result)
-             anomaly_score_list_logit.append(anomaly_result_logit)
-             anomaly_score_list_entropy.append(anomaly_result_entropy)
+             anomaly_score_list.append(anomaly_result.cpu().numpy())
+             anomaly_score_list_logit.append(anomaly_result_logit.cpu().numpy())
+             anomaly_score_list_entropy.append(anomaly_result_entropy.cpu().numpy())
         del result, anomaly_result, anomaly_result_logit, anomaly_result_entropy, ood_gts, mask
         torch.cuda.empty_cache()
 
@@ -185,9 +177,9 @@ def main():
     file.write( "\n")
 
     ood_gts = np.array(ood_gts_list)
-    anomaly_scores = np.array(anomaly_score_list)
-    anomaly_scores_logit = np.array(anomaly_score_list_logit)
-    anomaly_scores_entropy = np.array(anomaly_score_list_entropy)
+    anomaly_scores = np.array(anomaly_score_list).squeeze(1)
+    anomaly_scores_logit = np.array(anomaly_score_list_logit).squeeze(1)
+    anomaly_scores_entropy = np.array(anomaly_score_list_entropy).squeeze(1)
 
     # The ground truth masks are used to create binary masks for in-distribution (ID) and out-of-distribution (OOD) samples.
     ood_mask = (ood_gts == 1)
