@@ -103,10 +103,16 @@ def main():
     # Upload the images, apply unsqueeze to add a batch dimension, and permute the dimensions to match 
     # the expected input format of the model (batch_size, channels, height, width).
 
+    # CONTROLLO
+    paths = glob.glob(os.path.expanduser(str(args.input[0])))
+    if not paths:
+       print("ERRORE: nessuna immagine trovata con il pattern:", args.input[0])
+    return
+    
     for path in glob.glob(os.path.expanduser(str(args.input[0]))):
         print(path)
         images = input_transform((Image.open(path).convert('RGB'))).unsqueeze(0).float().cuda()
-        images = images.permute(0,3,1,2)
+        # images = images.permute(0,3,1,2)  POSSIBILE BUG
         with torch.no_grad():
             result = model(images)
 
