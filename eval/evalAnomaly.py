@@ -148,6 +148,10 @@ def main():
             ood_gts = np.where((ood_gts<20), 0, ood_gts)
             ood_gts = np.where((ood_gts==255), 1, ood_gts)
 
+         # CONTROLLO 
+        print("GT path:", pathGT)
+        print("Unique mask values:", np.unique(ood_gts))
+        print("Images processed:", len(anomaly_score_list))
         if 1 not in np.unique(ood_gts):
             continue              
         else:
