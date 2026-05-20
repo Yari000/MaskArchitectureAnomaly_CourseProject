@@ -104,6 +104,19 @@ def main():
     # the expected input format of the model (batch_size, channels, height, width).
 
     # CONTROLLO
+    pattern = os.path.expanduser(str(args.input[0]))
+    print("Pattern espanso:", pattern)
+    paths = glob.glob(pattern)
+    print(f"Trovati {len(paths)} file")
+    if paths:
+       print("Esempio:", paths[0])
+    else:
+    # Prova a listare la directory padre per capire cosa c'è
+    parent = os.path.dirname(pattern)
+    if os.path.exists(parent):
+        print("Contenuto della cartella:", os.listdir(parent))
+    else:
+        print("La cartella non esiste:", parent)
     paths = glob.glob(os.path.expanduser(str(args.input[0])))
     if not paths:
        print("ERRORE: nessuna immagine trovata con il pattern:", args.input[0])
