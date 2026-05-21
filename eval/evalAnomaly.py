@@ -12,7 +12,7 @@ from argparse import ArgumentParser
 from ood_metrics import fpr_at_95_tpr, calc_metrics, plot_roc, plot_pr, plot_barcode
 from sklearn.metrics import roc_auc_score, roc_curve, auc, precision_recall_curve, average_precision_score
 from torchvision.transforms import Compose, Resize, ToTensor, Normalize
-
+from matplotlib import pyplot as plt
 seed = 42
 
 # general reproducibility
@@ -30,7 +30,7 @@ input_transform = Compose(
     [
         Resize((512, 1024), Image.BILINEAR),
         ToTensor(),
-        # Normalize([.485, .456, .406], [.229, .224, .225]),
+        Normalize([.485, .456, .406], [.229, .224, .225]),
     ]
 )
 
@@ -114,6 +114,9 @@ def main():
     # Prova a listare la directory padre per capire cosa c'è
        parent = os.path.dirname(pattern)
     
+    print(os.path.exists(pathGT))
+
+
     for path in glob.glob(os.path.expanduser(str(args.input[0]))):
         print(path)
         images = input_transform((Image.open(path).convert('RGB'))).unsqueeze(0).float().cuda()
@@ -166,10 +169,10 @@ def main():
         if 1 not in np.unique(ood_gts):
             continue              
         else:
-             ood_gts_list.append(ood_gts)
-             anomaly_score_list.append(anomaly_result.cpu().numpy())
-             anomaly_score_list_logit.append(anomaly_result_logit.cpu().numpy())
-             anomaly_score_list_entropy.append(anomaly_result_entropy.cpu().numpy())
+              ood_gts_list.append(ood_gts)
+              anomaly_score_list.append(anomaly_result.cpu().numpy())
+              anomaly_score_list_logit.append(anomaly_result_logit.cpu().numpy())
+              anomaly_score_list_entropy.append(anomaly_result_entropy.cpu().numpy())
         del result, anomaly_result, anomaly_result_logit, anomaly_result_entropy, ood_gts, mask
         torch.cuda.empty_cache()
 
@@ -180,6 +183,12 @@ def main():
     anomaly_scores = np.array(anomaly_score_list).squeeze(1)
     anomaly_scores_logit = np.array(anomaly_score_list_logit).squeeze(1)
     anomaly_scores_entropy = np.array(anomaly_score_list_entropy).squeeze(1)
+
+    print(np.unique(ood_gts))
+    print(anomaly_result.min(),anomaly_result.max())
+    plt.imshow(anomaly_result[0].cpu())
+
+
 
     # The ground truth masks are used to create binary masks for in-distribution (ID) and out-of-distribution (OOD) samples.
     ood_mask = (ood_gts == 1)
