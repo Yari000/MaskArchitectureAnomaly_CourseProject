@@ -30,7 +30,7 @@ input_transform = Compose(
     [
         Resize((512, 1024), Image.BILINEAR),
         ToTensor(),
-        Normalize([.485, .456, .406], [.229, .224, .225]),
+        #Normalize([.485, .456, .406], [.229, .224, .225]),
     ]
 )
 
