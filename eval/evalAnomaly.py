@@ -114,7 +114,7 @@ def main():
     # Prova a listare la directory padre per capire cosa c'è
        parent = os.path.dirname(pattern)
     
-    print(os.path.exists(pathGT))
+    #print(os.path.exists(pathGT))
 
 
     for path in glob.glob(os.path.expanduser(str(args.input[0]))):
