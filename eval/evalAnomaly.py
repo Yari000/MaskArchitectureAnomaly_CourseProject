@@ -129,7 +129,7 @@ def main():
         probs= torch.nn.Softmax(dim=1)(result)
         anomaly_result = 1.0 - torch.max(probs, dim=1)[0] 
         print('prediction shape', anomaly_result.shape)
-        print('GT shape', ood_gts.shape)
+        #print('GT shape', ood_gts.shape)
         print('MSP min:', anomaly_result.min().item())
         print('MSP max:', anomaly_result.max().item())
         plt.imshow(anomaly_result[0].cpu().numpy())
