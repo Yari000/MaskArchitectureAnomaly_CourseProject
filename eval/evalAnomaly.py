@@ -24,7 +24,7 @@ NUM_CHANNELS = 3
 NUM_CLASSES = 20
 # gpu training specific
 torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
+torch.backends.cudnn.benchmark = True
 
 input_transform = Compose(
     [
