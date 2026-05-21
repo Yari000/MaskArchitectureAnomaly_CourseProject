@@ -239,6 +239,22 @@ def main():
     print(f'AUPRC score (entropy): {prc_auc_entropy*100.0}')
     print(f'FPR@TPR95 (entropy): {fpr_entropy*100.0}')
 
+    plt.figure(figsize=(15,5))
+
+    plt.subplot(1,3,1)
+    plt.imshow(Image.open(path))
+    plt.title("Image")
+    
+    plt.subplot(1,3,2)
+    plt.imshow(ood_gts)
+    plt.title("GT")
+    
+    plt.subplot(1,3,3)
+    plt.imshow(anomaly_result[0].cpu().numpy())
+    plt.title("MSP")
+    
+    plt.show()
+
     file.write(('    AUPRC score:' + str(prc_auc*100.0) + '   FPR@TPR95:' + str(fpr*100.0) +  '    AUPRC (logit) score:' + str(prc_auc_logit*100.0) + '   FPR@TPR95 (logit):' + str(fpr_logit*100.0) + '    AUPRC (entropy) score:' + str(prc_auc_entropy*100.0) + '   FPR@TPR95 (entropy):' + str(fpr_entropy*100.0)))
     file.close()
 
