@@ -114,7 +114,7 @@ def main():
     # Prova a listare la directory padre per capire cosa c'è
        parent = os.path.dirname(pattern)
     
-    #print(os.path.exists(pathGT))
+    
 
 
     for path in glob.glob(os.path.expanduser(str(args.input[0]))):
@@ -127,7 +127,14 @@ def main():
         # The anomaly score is calculated as 1 minus the maximum value of the model's output for each pixel
         # Anomaly score here is computed via MSP (Maximum Softmax Probability) method
         probs= torch.nn.Softmax(dim=1)(result)
-        anomaly_result = 1.0 - torch.max(probs, dim=1)[0]          
+        anomaly_result = 1.0 - torch.max(probs, dim=1)[0] 
+        print('prediction shape', anomaly_result.shape)
+        print('GT shape', ood_gts.shape)
+        print('MSP min:', anomaly_result.min().item())
+        print('MSP max:', anomaly_result.max().item())
+        plt.imshow(anomaly_result[0].cpu().numpy())
+        plt.show()
+        
         
         # MaxLogits version
         anomaly_result_logit = -torch.max(result, dim=1)[0]
@@ -145,10 +152,11 @@ def main():
            pathGT = pathGT.replace("jpg", "png")                
         if "RoadAnomaly" in pathGT:
            pathGT = pathGT.replace("jpg", "png")  
-
+        print(os.path.exists(pathGT))
         mask = Image.open(pathGT)
         mask = target_transform(mask)
         ood_gts = np.array(mask)
+        print('unique GT values',np.unique(ood_gts))
 
         if "RoadAnomaly" in pathGT:
             ood_gts = np.where((ood_gts==2), 1, ood_gts)
@@ -184,9 +192,8 @@ def main():
     anomaly_scores_logit = np.array(anomaly_score_list_logit).squeeze(1)
     anomaly_scores_entropy = np.array(anomaly_score_list_entropy).squeeze(1)
 
-    print(np.unique(ood_gts))
-    print(anomaly_result.min(),anomaly_result.max())
-    plt.imshow(anomaly_result[0].cpu())
+    
+    
 
 
 
