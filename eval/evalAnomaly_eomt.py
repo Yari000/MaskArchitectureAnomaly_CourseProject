@@ -111,10 +111,21 @@ def load_model(config_path: str, device: str, img_size=None, num_classes=None):
     print(f"Downloading weights from HuggingFace Hub: tue-mps/{name}")
     try:
         is_dinov3 = "dinov3" in name
-        state_dict_path = hf_hub_download(
-            repo_id=f"tue-mps/{name}",
-            filename="pytorch_model.bin",
-        )
+
+        # Try safetensors first (newer HuggingFace format), fallback to pytorch_model.bin
+        try:
+            from safetensors.torch import load_file as safetensors_load
+            state_dict_path = hf_hub_download(
+                repo_id=f"tue-mps/{name}",
+                filename="model.safetensors",
+            )
+            use_safetensors = True
+        except Exception:
+            state_dict_path = hf_hub_download(
+                repo_id=f"tue-mps/{name}",
+                filename="pytorch_model.bin",
+            )
+            use_safetensors = False
 
         if is_dinov3:
             # dinov3 models use delta weights — rebuild model with ckpt_path
@@ -127,11 +138,10 @@ def load_model(config_path: str, device: str, img_size=None, num_classes=None):
                 **model_kwargs,
             ).eval().to(device)
         else:
-            state_dict = torch.load(
-                state_dict_path,
-                map_location=device,
-                weights_only=True,
-            )
+            if use_safetensors:
+                state_dict = safetensors_load(state_dict_path, device=device)
+            else:
+                state_dict = torch.load(state_dict_path, map_location=device, weights_only=True)
             model.load_state_dict(state_dict, strict=False)
 
         print("Weights loaded successfully from HuggingFace Hub.")
@@ -249,11 +259,11 @@ def main():
     model, img_size = load_model(args.config, device, img_size=img_size, num_classes=args.num_classes)
     print(f"Model loaded. Inference image size: {img_size}")
 
-    # ── preprocessing (no normalisation: EoMT does it internally) ────────────
-    input_transform = Compose([
-        Resize(img_size, Image.BILINEAR),
-        ToTensor(),
-    ])
+    # ── preprocessing ────────────────────────────────────────────────────────
+    # NOTE: do NOT use ToTensor() here — window_imgs_semantic expects a uint8
+    # PIL image or tensor in (C, H, W) uint8 format, not float32.
+    # We only resize; EoMT handles normalisation internally.
+    input_transform = Resize(img_size, Image.BILINEAR)
     target_transform = Compose([
         Resize(img_size, Image.NEAREST),
     ])
@@ -287,7 +297,10 @@ def main():
     for path in paths:
         print(f"Processing: {path}")
 
-        img_tensor = input_transform(Image.open(path).convert("RGB"))  # (C, H, W)
+        # keep as PIL image after resize — window_imgs_semantic handles the rest
+        pil_img = input_transform(Image.open(path).convert("RGB"))
+        # convert to uint8 tensor (C, H, W) as expected by window_imgs_semantic
+        img_tensor = torch.from_numpy(np.array(pil_img)).permute(2, 0, 1)  # uint8 (C,H,W)
 
         anomaly_msp, anomaly_logit, anomaly_entropy = infer_single(
             model, img_tensor, img_size, device
