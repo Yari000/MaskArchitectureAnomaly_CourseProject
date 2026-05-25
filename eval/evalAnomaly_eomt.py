@@ -1,5 +1,4 @@
 
-
 # Anomaly evaluation script adapted for EoMT
 # Based on the original ERFNet evalAnomaly.py
 
@@ -36,10 +35,10 @@ IGNORE_INDEX = 255
 
 # ── model loading ─────────────────────────────────────────────────────────────
 
-def load_model(config_path: str, cityscapes_path: str, device: str):
+def load_model(config_path: str, device: str, img_size=None, num_classes=None):
     """
     Instantiate and load an EoMT Lightning model from a YAML config.
-    - img_size and num_classes are read from the datamodule (as in the official notebook)
+    - img_size and num_classes can be passed explicitly (no Cityscapes zip needed)
     - weights are downloaded automatically from HuggingFace Hub using the logger name in the config
     """
     import yaml
@@ -49,23 +48,15 @@ def load_model(config_path: str, cityscapes_path: str, device: str):
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
 
-    # ── build datamodule to get img_size and num_classes (mirrors official notebook) ──
-    data_cls_path = config["data"]["class_path"]
-    data_mod_name, data_cls_name = data_cls_path.rsplit(".", 1)
-    data_cls = getattr(importlib.import_module(data_mod_name), data_cls_name)
     data_kwargs = config["data"].get("init_args", {})
 
-    print(f"Setting up datamodule ({data_cls_name}) with cityscapes path: {cityscapes_path}")
-    data = data_cls(
-        path=cityscapes_path,
-        batch_size=1,
-        num_workers=0,
-        check_empty_targets=False,
-        **data_kwargs,
-    ).setup()
+    # img_size and num_classes: use explicit values if provided, otherwise read from config
+    # For cityscapes_semantic eomt_base_640: img_size=(640,640), num_classes=19
+    if img_size is None:
+        img_size = data_kwargs.get("img_size", (640, 640))
+    if num_classes is None:
+        num_classes = data_kwargs.get("num_classes", 19)
 
-    img_size    = data.img_size
-    num_classes = data.num_classes
     print(f"  img_size={img_size}  num_classes={num_classes}")
 
     # ── build encoder ─────────────────────────────────────────────────────────
@@ -240,9 +231,12 @@ def main():
         help="Path to the EoMT YAML config file",
     )
     parser.add_argument(
-        "--cityscapes_path",
-        default="/content/drive/MyDrive/Anomaly_Segmentation_Datasets/cityscapes",
-        help="Path to the Cityscapes dataset folder (used by the datamodule to get img_size and num_classes)",
+        "--img_size", type=int, nargs=2, default=None,
+        help="Override inference image size as H W, e.g. --img_size 640 640 (default: 640 640 from config)",
+    )
+    parser.add_argument(
+        "--num_classes", type=int, default=None,
+        help="Override number of classes (default: 19 for Cityscapes)",
     )
     parser.add_argument("--cpu", action="store_true")
     args = parser.parse_args()
@@ -251,7 +245,8 @@ def main():
 
     # ── load model ────────────────────────────────────────────────────────────
     print(f"Loading EoMT from config: {args.config}")
-    model, img_size = load_model(args.config, args.cityscapes_path, device)
+    img_size    = tuple(args.img_size) if args.img_size else None
+    model, img_size = load_model(args.config, device, img_size=img_size, num_classes=args.num_classes)
     print(f"Model loaded. Inference image size: {img_size}")
 
     # ── preprocessing (no normalisation: EoMT does it internally) ────────────
@@ -367,3 +362,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
