@@ -1,5 +1,5 @@
 
-     # Anomaly evaluation script adapted for EoMT
+  # Anomaly evaluation script adapted for EoMT
 # Based on the original ERFNet evalAnomaly.py
 
 import os
@@ -365,7 +365,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()  
-   
-       
-   
+    main()
