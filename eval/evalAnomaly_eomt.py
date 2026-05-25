@@ -1,5 +1,6 @@
 
-  # Anomaly evaluation script adapted for EoMT
+
+# Anomaly evaluation script adapted for EoMT
 # Based on the original ERFNet evalAnomaly.py
 
 import os
@@ -239,7 +240,7 @@ def main():
         help="Path to the EoMT YAML config file",
     )
     parser.add_argument(
-        "--cityscapes-path",
+        "--cityscapes_path",
         default="/content/drive/MyDrive/Anomaly_Segmentation_Datasets/cityscapes",
         help="Path to the Cityscapes dataset folder (used by the datamodule to get img_size and num_classes)",
     )
