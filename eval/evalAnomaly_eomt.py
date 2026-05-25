@@ -3,6 +3,11 @@
 # Based on the original ERFNet evalAnomaly.py
 
 import os
+import sys
+
+# Add EoMT repo root to path so that 'datasets', 'models', 'training' modules are importable
+sys.path.insert(0, "/content/MaskArchitectureAnomaly_CourseProject/eomt")
+
 import glob
 import torch
 import random
