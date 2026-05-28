@@ -157,7 +157,7 @@ def load_model(config_path: str, device: str, img_size=None, num_classes=None):
 
 # ── single-image inference ────────────────────────────────────────────────────
 
-def infer_single(model, img_tensor: torch.Tensor, img_size, device: str):
+def infer_single(model, img_tensor: torch.Tensor, img_size, device: str, temperature=1.0 ):
     """
     Run EoMT semantic inference on a single image tensor (C, H, W).
     NOTE: no external normalisation — EoMT applies pixel_mean/pixel_std internally.
@@ -193,7 +193,7 @@ def infer_single(model, img_tensor: torch.Tensor, img_size, device: str):
             pixel_logits, origins, img_sizes
         )[0]                                        # (num_classes, H, W)
 
-    pixel_logits = pixel_logits.float()             # back to fp32 for metrics
+    pixel_logits = pixel_logits.float() / temperature           # back to fp32 for metrics
 
     # MSP
     probs           = torch.softmax(pixel_logits, dim=0)
@@ -207,6 +207,40 @@ def infer_single(model, img_tensor: torch.Tensor, img_size, device: str):
 
     return anomaly_msp, anomaly_logit, anomaly_entropy
 
+# funzione per calcolare rba 
+def infer_single_rba(model, img_tensor, img_size, device):
+    dtype = torch.float16 if device != "cpu" else torch.float32
+
+    with torch.no_grad(), autocast(dtype=dtype, device_type=device):
+        imgs      = [img_tensor.to(device)]
+        img_sizes = [img_tensor.shape[-2:]]
+        crops, origins = model.window_imgs_semantic(imgs)
+        mask_logits_per_layer, class_logits_per_layer = model(crops)
+
+        mask_logits  = F.interpolate(
+            mask_logits_per_layer[-1], img_size, mode="bilinear", align_corners=False
+        )
+        class_logits = class_logits_per_layer[-1]  # (B, Q, num_classes+1)
+
+        # RbA: per ogni query, prob di essere una classe ID (esclude void/last class)
+        # class_logits shape: (B, Q, C+1) — l'ultima classe è void/"no object"
+        class_probs = torch.softmax(class_logits, dim=-1)  # (B, Q, C+1)
+        id_probs    = class_probs[..., :-1].sum(dim=-1)    # (B, Q) — prob ID per query
+
+        # mask_logits: (B, Q, H, W) — sigmoid per probabilità di appartenenza
+        mask_probs  = torch.sigmoid(mask_logits)           # (B, Q, H, W)
+
+        # RbA score per pixel: max su Q di (mask_prob * id_prob)
+        id_probs    = id_probs[..., None, None]            # (B, Q, 1, 1)
+        rba_score   = (mask_probs * id_probs).max(dim=1)[0]  # (B, H, W)
+
+        rba_score   = model.revert_window_logits_semantic(
+            rba_score.unsqueeze(1), origins, img_sizes
+        )[0][0]  # (H, W)
+
+    # anomaly = bassa appartenenza a qualsiasi maschera ID
+    anomaly_rba = (1.0 - rba_score.float()).cpu().numpy()
+    return anomaly_rba
 
 # ── GT remapping ──────────────────────────────────────────────────────────────
 
@@ -235,6 +269,7 @@ def main():
         nargs="+",
         help="Glob pattern for input images, e.g. 'path/to/images/*.png'",
     )
+    parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument(
         "--config",
         default="../configs/dinov2/cityscapes/semantic/eomt_base_640.yaml",
