@@ -312,6 +312,7 @@ def main():
     anomaly_score_list         = []
     anomaly_score_list_logit   = []
     anomaly_score_list_entropy = []
+    anomaly_score_list_rba     = []
     ood_gts_list               = []
 
     pattern = os.path.expanduser(str(args.input[0]))
@@ -338,9 +339,10 @@ def main():
         img_tensor = torch.from_numpy(np.array(pil_img)).permute(2, 0, 1)  # uint8 (C,H,W)
 
         anomaly_msp, anomaly_logit, anomaly_entropy = infer_single(
-            model, img_tensor, img_size, device
+            model, img_tensor, img_size, device, temperature=args.temperature
         )
-
+        anomaly_rba = infer_single_rba(model, img_tensor, img_size, device)
+        
         # ground-truth mask path
         pathGT = path.replace("images", "labels_masks")
         if "RoadObsticle21" in pathGT:
@@ -366,6 +368,7 @@ def main():
         anomaly_score_list.append(anomaly_msp)
         anomaly_score_list_logit.append(anomaly_logit)
         anomaly_score_list_entropy.append(anomaly_entropy)
+        anomaly_score_list_rba.append(anomaly_rba)
 
         torch.cuda.empty_cache()
 
@@ -399,6 +402,7 @@ def main():
     auprc_msp,     fpr_msp     = compute_metrics(anomaly_scores,         ood_mask, ind_mask, "MSP")
     auprc_logit,   fpr_logit   = compute_metrics(anomaly_scores_logit,   ood_mask, ind_mask, "MaxLogit")
     auprc_entropy, fpr_entropy = compute_metrics(anomaly_scores_entropy, ood_mask, ind_mask, "Entropy")
+    auprc_rba, fpr_rba         = compute_metrics(np.array(anomaly_score_list_rba), ood_mask, ind_mask, "RbA")
 
     result_file.write(
         f"  AUPRC (MSP): {auprc_msp*100:.2f}%   FPR@TPR95 (MSP): {fpr_msp*100:.2f}%"
