@@ -186,29 +186,66 @@ def infer_single(model, img_tensor: torch.Tensor, img_size, device: str, tempera
         class_logits = class_logits_per_layer[-1]   # (B, Q, num_classes+1)
 
         # combine masks and class logits → (B, num_classes, H, W)
-        pixel_logits = model.to_per_pixel_logits_semantic(mask_logits, class_logits)
+        # pixel_logits = model.to_per_pixel_logits_semantic(mask_logits, class_logits)
+
+        # FIX
+        # before computing probs return to the original image dimension :(q,h,w)
+        mask_logits = model.revert_window_logits_semantic(mask_logits, origins, img_sizes)[0] 
+        class_logits = class_logits[0]  # (q, numclasses+1)
+
+        # FIX
+        # convert to float to avoid underflow
+        mask_logits = mask_logits.float()
+        class_logits = class_logits.float() / temperature
 
         # revert window tiling → list[(num_classes, H, W)]
-        pixel_logits = model.revert_window_logits_semantic(
-            pixel_logits, origins, img_sizes
-        )[0]                                        # (num_classes, H, W)
+        #pixel_logits = model.revert_window_logits_semantic(
+        #    pixel_logits, origins, img_sizes
+        #)[0]                                        # (num_classes, H, W)
 
-    pixel_logits = pixel_logits.float() / temperature           # back to fp32 for metrics
+    #pixel_logits = pixel_logits.float() / temperature           # back to fp32 for metrics
+
+    # FIX
+    # take only known classes (in-distribution ones) excluding the last column
+    id_class_logits = class_logits[:, :-1]  # Shape: (Q, num_classes)
+
+    #FIX 
+    # transform spacial query logits into binary activation probs thru a sigmoid
+    mask_probs = torch.sigmoid(mask_logits)  # Shape: (Q, H, W)
+
+    # FIX
+    # Evaluate prob distribution over known classes
+    class_probs = torch.softmax(id_class_logits, dim=-1) # shape (q, numclasses)
+
+    # FIX
+    # spacial projection to get P(class|query)*P(query|pixel) = P(class|pixel)
+    pixel_probs = torch.einsum("qc,qhw->chw", class_probs, mask_probs)      # Shape: (num_classes, H, W)
+    pixel_logits = torch.einsum("qc,qhw->chw", id_class_logits, mask_probs)  # Shape: (num_classes, H, W)
 
     # MSP
-    probs           = torch.softmax(pixel_logits, dim=0)
-    anomaly_msp     = (1.0 - torch.max(probs, dim=0)[0]).cpu().numpy()
+    #probs           = torch.softmax(pixel_logits, dim=0)
+    #anomaly_msp     = (1.0 - torch.max(probs, dim=0)[0]).cpu().numpy()
 
     # MaxLogit
-    anomaly_logit   = (-torch.max(pixel_logits, dim=0)[0]).cpu().numpy()
+    #anomaly_logit   = (-torch.max(pixel_logits, dim=0)[0]).cpu().numpy()
 
     # Entropy
-    anomaly_entropy = (-torch.sum(probs * torch.log(probs + 1e-8), dim=0)).cpu().numpy()
+    #anomaly_entropy = (-torch.sum(probs * torch.log(probs + 1e-8), dim=0)).cpu().numpy()
 
+    #FIX 
+    # evaluate the metrics
+    anomaly_msp = (1.0 - torch.max(pixel_probs, dim=0)[0]).cpu().numpy()
+    anomaly_logit = (-torch.max(pixel_logits, dim=0)[0]).cpu().numpy()
+    anomaly_entropy = (-torch.sum(pixel_probs * torch.log(pixel_probs + 1e-8), dim=0)).cpu().numpy()
+    
     return anomaly_msp, anomaly_logit, anomaly_entropy
 
-# funzione per calcolare rba 
+
 def infer_single_rba(model, img_tensor, img_size, device):
+    """
+    inference over the RbA method (rejected by all): a pixel is considered an anomaly if its rejected by 
+    all queries that show high in-distribution confidence
+    """
     dtype = torch.float16 if device != "cpu" else torch.float32
 
     with torch.no_grad(), autocast(dtype=dtype, device_type=device):
@@ -224,22 +261,45 @@ def infer_single_rba(model, img_tensor, img_size, device):
 
         # RbA: per ogni query, prob di essere una classe ID (esclude void/last class)
         # class_logits shape: (B, Q, C+1) — l'ultima classe è void/"no object"
-        class_probs = torch.softmax(class_logits, dim=-1)  # (B, Q, C+1)
-        id_probs    = class_probs[..., :-1].sum(dim=-1)    # (B, Q) — prob ID per query
+        #class_probs = torch.softmax(class_logits, dim=-1)  # (B, Q, C+1)
+        #id_probs    = class_probs[..., :-1].sum(dim=-1)    # (B, Q) — prob ID per query
+
+        # FIX
+        # retrieve spacial geometry by getting toghether the crops
+        mask_logits = model.revert_window_logits_semantic(mask_logits, origins, img_sizes)[0]  # (Q, H, W)
+        class_logits = class_logits[0]  # (Q, num_classes + 1)
+        mask_logits = mask_logits.float()
+        class_logits = class_logits.float()
+
+        # FIX 
+        # evaluate prob that every query belongs to a known class
+        class_probs = torch.softmax(class_logits, dim=-1)  # (Q, num_classes + 1)
+        id_probs = class_probs[:, :-1].sum(dim=-1)         # Shape: (Q,)
 
         # mask_logits: (B, Q, H, W) — sigmoid per probabilità di appartenenza
         mask_probs  = torch.sigmoid(mask_logits)           # (B, Q, H, W)
 
-        # RbA score per pixel: max su Q di (mask_prob * id_prob)
-        id_probs    = id_probs[..., None, None]            # (B, Q, 1, 1)
-        rba_score   = (mask_probs * id_probs).max(dim=1)[0]  # (B, H, W)
+        #FIX
+        # expand dimensions to abilitate pixel-to-pixel broadcasting
+        id_probs = id_probs[:, None, None]  # Shape: (Q, 1, 1)
 
-        rba_score   = model.revert_window_logits_semantic(
-            rba_score.unsqueeze(1), origins, img_sizes
-        )[0][0]  # (H, W)
+        # RbA score per pixel: max su Q di (mask_prob * id_prob)
+        #id_probs    = id_probs[..., None, None]            # (B, Q, 1, 1)
+        #rba_score   = (mask_probs * id_probs).max(dim=1)[0]  # (B, H, W)
+
+        #rba_score   = model.revert_window_logits_semantic(
+        #    rba_score.unsqueeze(1), origins, img_sizes
+        #)[0][0]  # (H, W)
+
+        # FIX
+        # evaluate probs that a pixel DOES NOT belong to a valid class for the q-th query
+        rejected_by_query = 1.0 - (mask_probs * id_probs)  # Shape: (Q, H, W)
 
     # anomaly = bassa appartenenza a qualsiasi maschera ID
-    anomaly_rba = (1.0 - rba_score.float()).cpu().numpy()
+    #anomaly_rba = (1.0 - rba_score.float()).cpu().numpy()
+
+    # FIX
+    anomaly_rba = torch.prod(rejected_by_query, dim=0).cpu().numpy()  # Shape: (H, W)
     return anomaly_rba
 
 # ── GT remapping ──────────────────────────────────────────────────────────────
