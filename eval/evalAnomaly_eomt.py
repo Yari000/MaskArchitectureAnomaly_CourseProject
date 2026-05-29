@@ -50,13 +50,12 @@ def load_model(config_path: str, device: str, img_size=None, num_classes=None):
 
     data_kwargs = config["data"].get("init_args", {})
 
-    # FIX (debug)
-    img_size = tuple(img_size)
-    
     # img_size and num_classes: use explicit values if provided, otherwise read from config
     # For cityscapes_semantic eomt_base_640: img_size=(640,640), num_classes=19
     if img_size is None:
-        img_size = data_kwargs.get("img_size", (640, 640))
+        img_size = data_kwargs.get("img_size", (1024, 1024))  # changed the default according to the yaml
+    # FIX (debug)
+    img_size = tuple(img_size)
     if num_classes is None:
         num_classes = data_kwargs.get("num_classes", 19)
 
@@ -242,18 +241,6 @@ def infer_single(model, img_tensor: torch.Tensor, img_size, device: str, tempera
     anomaly_entropy = (-torch.sum(pixel_probs * torch.log(pixel_probs + 1e-8), dim=0)).cpu().numpy()
     
     return anomaly_msp, anomaly_logit, anomaly_entropy
-
-
-# small debug section
-import matplotlib.pyplot as plt
-probs = torch.softmax(pixel_logits, dim=0)
-pred_class = torch.argmax(probs, dim=0).cpu().numpy()
-plt.figure(figsize=(12,4))
-plt.subplot(1,2,1); plt.imshow(pil_img); plt.title("Input")
-plt.subplot(1,2,2); plt.imshow(pred_class, cmap="tab20"); plt.title("Predicted segmentation")
-plt.savefig("debug_seg.png")
-
-
 
 def infer_single_rba(model, img_tensor, img_size, device):
     """
