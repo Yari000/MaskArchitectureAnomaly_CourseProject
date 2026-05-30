@@ -22,7 +22,7 @@ from ood_metrics import fpr_at_95_tpr
 from sklearn.metrics import average_precision_score
 from torchvision.transforms import Compose, Resize, ToTensor
 
-# ── reproducibility ───────────────────────────────────────────────────────────
+# reproducibility
 seed = 42
 random.seed(seed)
 np.random.seed(seed)
@@ -33,12 +33,11 @@ torch.backends.cudnn.benchmark = True
 IGNORE_INDEX = 255
 
 
-# ── model loading ─────────────────────────────────────────────────────────────
+# loading the model
 
 def load_model(config_path: str, device: str, img_size=None, num_classes=None):
     """
     Instantiate and load an EoMT Lightning model from a YAML config.
-    - img_size and num_classes can be passed explicitly (no Cityscapes zip needed)
     - weights are downloaded automatically from HuggingFace Hub using the logger name in the config
     """
     import yaml
@@ -53,21 +52,23 @@ def load_model(config_path: str, device: str, img_size=None, num_classes=None):
     # img_size and num_classes: use explicit values if provided, otherwise read from config
     # For cityscapes_semantic eomt_base_640: img_size=(640,640), num_classes=19
     if img_size is None:
-        img_size = data_kwargs.get("img_size", (1024, 1024))  # changed the default according to the yaml
+        img_size = data_kwargs.get("img_size", (1024, 1024))  #1024?
+    
     # FIX (debug)
     img_size = tuple(img_size)
+    
     if num_classes is None:
         num_classes = data_kwargs.get("num_classes", 19)
 
     print(f"  img_size={img_size}  num_classes={num_classes}")
 
-    # ── build encoder ─────────────────────────────────────────────────────────
+    # build the econder
     encoder_cfg = config["model"]["init_args"]["network"]["init_args"]["encoder"]
     enc_mod, enc_cls_name = encoder_cfg["class_path"].rsplit(".", 1)
     encoder_cls = getattr(importlib.import_module(enc_mod), enc_cls_name)
     encoder = encoder_cls(img_size=img_size, **encoder_cfg.get("init_args", {}))
 
-    # ── build network ─────────────────────────────────────────────────────────
+    # build the network (eomt)
     network_cfg = config["model"]["init_args"]["network"]
     net_mod, net_cls_name = network_cfg["class_path"].rsplit(".", 1)
     network_cls = getattr(importlib.import_module(net_mod), net_cls_name)
@@ -79,7 +80,7 @@ def load_model(config_path: str, device: str, img_size=None, num_classes=None):
         **network_kwargs,
     )
 
-    # ── build Lightning module ────────────────────────────────────────────────
+    # build the lightninghface module
     lit_mod, lit_cls_name = config["model"]["class_path"].rsplit(".", 1)
     lit_cls = getattr(importlib.import_module(lit_mod), lit_cls_name)
     model_kwargs = {k: v for k, v in config["model"]["init_args"].items() if k != "network"}
@@ -100,7 +101,7 @@ def load_model(config_path: str, device: str, img_size=None, num_classes=None):
         **model_kwargs,
     ).eval().to(device)
 
-    # ── download weights from HuggingFace Hub ─────────────────────────────────
+    # download the weights from the HuggingFace Hub
     name = (config.get("trainer", {})
                   .get("logger", {})
                   .get("init_args", {})
@@ -110,59 +111,30 @@ def load_model(config_path: str, device: str, img_size=None, num_classes=None):
         warnings.warn("No logger name found in config — proceeding with random weights.")
         return model, img_size
 
-    print(f"Downloading weights from HuggingFace Hub: tue-mps/{name}")
-    try:
-        is_dinov3 = "dinov3" in name
+    # loading the weights from the local checkpoint
+    ckpt_path = "/content/drive/MyDrive/eomt_weights/eomt_cityscapes.bin"
+    print(f"Loading weights from: {ckpt_path}")
+    state_dict = torch.load(ckpt_path, map_location=device, weights_only=True)
 
-        # Try safetensors first (newer HuggingFace format), fallback to pytorch_model.bin
-        try:
-            from safetensors.torch import load_file as safetensors_load
-            state_dict_path = hf_hub_download(
-                repo_id=f"tue-mps/{name}",
-                filename="model.safetensors",
-            )
-            use_safetensors = True
-        except Exception:
-            state_dict_path = hf_hub_download(
-                repo_id=f"tue-mps/{name}",
-                filename="pytorch_model.bin",
-            )
-            use_safetensors = False
+    # lightning checkpoints wrap the weights under the state_dict variable
+    if "state_dict" in state_dict:
+        state_dict = state_dict["state_dict"]
 
-        if is_dinov3:
-            # dinov3 models use delta weights — rebuild model with ckpt_path
-            model_kwargs["ckpt_path"]      = state_dict_path
-            model_kwargs["delta_weights"]  = True
-            model = lit_cls(
-                img_size=img_size,
-                num_classes=num_classes,
-                network=network,
-                **model_kwargs,
-            ).eval().to(device)
-        else:
-            if use_safetensors:
-                state_dict = safetensors_load(state_dict_path, device=device)
-            else:
-                state_dict = torch.load(state_dict_path, map_location=device, weights_only=True)
-            model.load_state_dict(state_dict, strict=False)
-
-        print("Weights loaded successfully from HuggingFace Hub.")
-
-    except RepositoryNotFoundError:
-        warnings.warn(
-            f"Pre-trained model not found for '{name}' on HuggingFace Hub. "
-            "Proceeding with random weights."
-        )
+    # Check to see if weights are passed correctly
+    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+    print(f"Missing keys ({len(missing_keys)}): {missing_keys[:10]}")
+    print(f"Unexpected keys ({len(unexpected_keys)}): {unexpected_keys[:10]}")
+    print("Weights loaded successfully.")
 
     return model, img_size
 
 
-# ── single-image inference ────────────────────────────────────────────────────
+# inference for a single image
 
 def infer_single(model, img_tensor: torch.Tensor, img_size, device: str, temperature=1.0 ):
     """
     Run EoMT semantic inference on a single image tensor (C, H, W).
-    NOTE: no external normalisation — EoMT applies pixel_mean/pixel_std internally.
+    NOTE: no external normalization, EoMT applies pixel_mean/pixel_std internally.
 
     Returns three (H, W) float32 numpy arrays:
         anomaly_msp     – 1 - max softmax probability  (MSP)
@@ -172,7 +144,7 @@ def infer_single(model, img_tensor: torch.Tensor, img_size, device: str, tempera
     dtype = torch.float16 if device != "cpu" else torch.float32
 
     with torch.no_grad(), autocast(dtype=dtype, device_type=device):
-        imgs      = [img_tensor.to(device)]
+        imgs = [img_tensor.to(device)]
         img_sizes = [img_tensor.shape[-2:]]
 
         # sliding-window preprocessing (official EoMT pipeline)
@@ -238,9 +210,14 @@ def infer_single(model, img_tensor: torch.Tensor, img_size, device: str, tempera
     # evaluate the metrics
     anomaly_msp = (1.0 - torch.max(pixel_probs, dim=0)[0]).cpu().numpy()
     anomaly_logit = (-torch.max(pixel_logits, dim=0)[0]).cpu().numpy()
-    anomaly_entropy = (-torch.sum(pixel_probs * torch.log(pixel_probs + 1e-8), dim=0)).cpu().numpy()
+
+    # probabilities are normalized to guarantee a valid prob distribution to evaluate entropy
+    pixel_probs_norm = pixel_probs / (pixel_probs.sum(dim=0, keepdim=True) + 1e-8)
+    anomaly_entropy = (-torch.sum(pixel_probs_norm * torch.log(pixel_probs_norm + 1e-8), dim=0)).cpu().numpy()
     
     return anomaly_msp, anomaly_logit, anomaly_entropy
+
+# rejected by all inference
 
 def infer_single_rba(model, img_tensor, img_size, device):
     """
@@ -260,10 +237,10 @@ def infer_single_rba(model, img_tensor, img_size, device):
         )
         class_logits = class_logits_per_layer[-1]  # (B, Q, num_classes+1)
 
-        # RbA: per ogni query, prob di essere una classe ID (esclude void/last class)
-        # class_logits shape: (B, Q, C+1) — l'ultima classe è void/"no object"
-        #class_probs = torch.softmax(class_logits, dim=-1)  # (B, Q, C+1)
-        #id_probs    = class_probs[..., :-1].sum(dim=-1)    # (B, Q) — prob ID per query
+        # RbA: for every query is the prob of being into a ID class (excluding void/last classes)
+        # class_logits shape: (B, Q, C+1) — last class is VOID
+        # class_probs = torch.softmax(class_logits, dim=-1)  # (B, Q, C+1)
+        # id_probs    = class_probs[..., :-1].sum(dim=-1)    # (B, Q) — ID prob for the query
 
         # FIX
         # retrieve spacial geometry by getting toghether the crops
@@ -303,7 +280,7 @@ def infer_single_rba(model, img_tensor, img_size, device):
     anomaly_rba = torch.prod(rejected_by_query, dim=0).cpu().numpy()  # Shape: (H, W)
     return anomaly_rba
 
-# ── GT remapping ──────────────────────────────────────────────────────────────
+# GT remapping
 
 def remap_gt(ood_gts: np.ndarray, pathGT: str) -> np.ndarray:
     """Apply dataset-specific label remapping to ground-truth masks."""
@@ -320,7 +297,7 @@ def remap_gt(ood_gts: np.ndarray, pathGT: str) -> np.ndarray:
     return ood_gts
 
 
-# ── main ──────────────────────────────────────────────────────────────────────
+# main
 
 def main():
     parser = ArgumentParser()
@@ -349,14 +326,15 @@ def main():
 
     device = "cpu" if args.cpu else "cuda"
 
-    # ── load model ────────────────────────────────────────────────────────────
+    # load the model
     print(f"Loading EoMT from config: {args.config}")
     img_size    = tuple(args.img_size) if args.img_size else None
     model, img_size = load_model(args.config, device, img_size=img_size, num_classes=args.num_classes)
     print(f"Model loaded. Inference image size: {img_size}")
 
-    # ── preprocessing ────────────────────────────────────────────────────────
-    # NOTE: do NOT use ToTensor() here — window_imgs_semantic expects a uint8
+    # image preprocessing
+    
+    # NOTE: do NOT use ToTensor() here, window_imgs_semantic expects a uint8
     # PIL image or tensor in (C, H, W) uint8 format, not float32.
     # We only resize; EoMT handles normalisation internally.
     input_transform = Resize(img_size, Image.BILINEAR)
@@ -364,12 +342,12 @@ def main():
         Resize(img_size, Image.NEAREST),
     ])
 
-    # ── results file ──────────────────────────────────────────────────────────
+    # results file
     if not os.path.exists("results.txt"):
         open("results.txt", "w").close()
     result_file = open("results.txt", "a")
 
-    # ── image loop ────────────────────────────────────────────────────────────
+    # image inference loop
     anomaly_score_list         = []
     anomaly_score_list_logit   = []
     anomaly_score_list_entropy = []
@@ -377,7 +355,7 @@ def main():
     ood_gts_list               = []
 
     pattern = os.path.expanduser(str(args.input[0]))
-    paths   = sorted(glob.glob(pattern))
+    paths = sorted(glob.glob(pattern))
 
     if not paths:
         parent = os.path.dirname(pattern)
@@ -394,7 +372,7 @@ def main():
     for path in paths:
         print(f"Processing: {path}")
 
-        # keep as PIL image after resize — window_imgs_semantic handles the rest
+        # keep as PIL image after resize, window_imgs_semantic handles the rest
         pil_img = input_transform(Image.open(path).convert("RGB"))
         # convert to uint8 tensor (C, H, W) as expected by window_imgs_semantic
         img_tensor = torch.from_numpy(np.array(pil_img)).permute(2, 0, 1)  # uint8 (C,H,W)
@@ -438,7 +416,7 @@ def main():
         result_file.close()
         return
 
-    # ── aggregate ─────────────────────────────────────────────────────────────
+    # aggregate
     ood_gts                = np.array(ood_gts_list)               # (N, H, W)
     anomaly_scores         = np.array(anomaly_score_list)          # (N, H, W)
     anomaly_scores_logit   = np.array(anomaly_score_list_logit)
@@ -448,7 +426,7 @@ def main():
     ood_mask   = (ood_gts == 1) & valid_mask
     ind_mask   = (ood_gts == 0) & valid_mask
 
-    # ── metrics ───────────────────────────────────────────────────────────────
+    # computing the metrics (AUPCR and FPR)
     def compute_metrics(scores, ood_m, ind_m, label):
         ood_out   = scores[ood_m]
         ind_out   = scores[ind_m]
