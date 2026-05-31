@@ -413,20 +413,31 @@ def main():
     auprc_rba, fpr_rba         = compute_metrics(np.array(anomaly_score_list_rba), ood_mask, ind_mask, "RbA")
     aupcr_temp = []
     fpr_temp = []
-    for t in args.temperature:
-        # class_logit_list is a tensor list (Q, C+1), one for every image
-        anomaly_scores_t = []
+
+    # compute temp scaling in range --temperature
+    for i, t in enumerate(args.temperature):
+        anomaly_msp_t, anomaly_entropy_t = [], []
         for cl, mp in zip(class_logit_list, mask_probs_list):
-            id_logits_t = cl[:, :-1] / t                                    # (Q, num_classes)
-            pixel_logits_t = torch.einsum("qc,qhw->chw", id_logits_t, mp)  # (num_classes, H, W)
-            anomaly_scores_t.append((-torch.max(pixel_logits_t, dim=0)[0]).numpy())
-        aupcr_temp[t], fpr_temp[t] = compute_metrics(np.array(anomaly_scores_t), ood_mask, ind_mask, f"MaxLogit T={t}")
+            id_logits_t = cl[:, :-1] / t
+            class_probs_t = torch.softmax(id_logits_t, dim=-1)
+            pixel_probs_t = torch.einsum("qc,qhw->chw", class_probs_t, mp)
+        
+            # MSP
+            anomaly_msp_t.append((1.0 - torch.max(pixel_probs_t, dim=0)[0]).numpy())
+        
+            # Entropy
+            pixel_probs_norm = pixel_probs_t / (pixel_probs_t.sum(dim=0, keepdim=True) + 1e-8)
+            anomaly_entropy_t.append(
+                (-torch.sum(pixel_probs_norm * torch.log(pixel_probs_norm + 1e-8), dim=0)).numpy()
+        )
+    
+        compute_metrics(np.array(anomaly_msp_t), ood_mask, ind_mask, f"MSP T={t}")
+        compute_metrics(np.array(anomaly_entropy_t), ood_mask, ind_mask, f"Entropy T={t}")
 
     result_file.write(
         f"  AUPRC (MSP): {auprc_msp*100:.2f}%   FPR@TPR95 (MSP): {fpr_msp*100:.2f}%"
         f"  |  AUPRC (MaxLogit): {auprc_logit*100:.2f}%   FPR@TPR95 (MaxLogit): {fpr_logit*100:.2f}%"
         f"  |  AUPRC (Entropy): {auprc_entropy*100:.2f}%   FPR@TPR95 (Entropy): {fpr_entropy*100:.2f}%\n"
-        f"  |  AUPCR (Temp Scaling): {aupcr_temp*100:.2f}%   FPR@TPR95 (Temp Scaling): {frp_temp*100:.2f}%\n"
     )
     result_file.close()
 
