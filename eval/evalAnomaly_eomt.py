@@ -131,7 +131,7 @@ def load_model(config_path: str, device: str, img_size=None, num_classes=None):
 
 # inference for a single image
 
-def infer_single(model, img_tensor: torch.Tensor, img_size, device: str, temperature=1.0 ):
+def infer_single(model, img_tensor: torch.Tensor, img_size, device: str):
     """
     Run EoMT semantic inference on a single image tensor (C, H, W).
     NOTE: no external normalization, EoMT applies pixel_mean/pixel_std internally.
@@ -159,10 +159,6 @@ def infer_single(model, img_tensor: torch.Tensor, img_size, device: str, tempera
         )
         class_logits = class_logits_per_layer[-1]   # (B, Q, num_classes+1)
 
-        # combine masks and class logits → (B, num_classes, H, W)
-        # pixel_logits = model.to_per_pixel_logits_semantic(mask_logits, class_logits)
-
-        # FIX
         # before computing probs return to the original image dimension :(q,h,w)
         mask_logits = model.revert_window_logits_semantic(mask_logits, origins, img_sizes)[0] 
         class_logits = class_logits[0]  # (q, numclasses+1)
@@ -170,43 +166,21 @@ def infer_single(model, img_tensor: torch.Tensor, img_size, device: str, tempera
         # FIX
         # convert to float to avoid underflow
         mask_logits = mask_logits.float()
-        class_logits = class_logits.float() / temperature
+        class_logits = class_logits.float() 
 
-        # revert window tiling → list[(num_classes, H, W)]
-        #pixel_logits = model.revert_window_logits_semantic(
-        #    pixel_logits, origins, img_sizes
-        #)[0]                                        # (num_classes, H, W)
-
-    #pixel_logits = pixel_logits.float() / temperature           # back to fp32 for metrics
-
-    # FIX
     # take only known classes (in-distribution ones) excluding the last column
     id_class_logits = class_logits[:, :-1]  # Shape: (Q, num_classes)
 
-    #FIX 
     # transform spacial query logits into binary activation probs thru a sigmoid
     mask_probs = torch.sigmoid(mask_logits)  # Shape: (Q, H, W)
 
-    # FIX
     # Evaluate prob distribution over known classes
     class_probs = torch.softmax(id_class_logits, dim=-1) # shape (q, numclasses)
 
-    # FIX
     # spacial projection to get P(class|query)*P(query|pixel) = P(class|pixel)
     pixel_probs = torch.einsum("qc,qhw->chw", class_probs, mask_probs)      # Shape: (num_classes, H, W)
     pixel_logits = torch.einsum("qc,qhw->chw", id_class_logits, mask_probs)  # Shape: (num_classes, H, W)
 
-    # MSP
-    #probs           = torch.softmax(pixel_logits, dim=0)
-    #anomaly_msp     = (1.0 - torch.max(probs, dim=0)[0]).cpu().numpy()
-
-    # MaxLogit
-    #anomaly_logit   = (-torch.max(pixel_logits, dim=0)[0]).cpu().numpy()
-
-    # Entropy
-    #anomaly_entropy = (-torch.sum(probs * torch.log(probs + 1e-8), dim=0)).cpu().numpy()
-
-    #FIX 
     # evaluate the metrics
     anomaly_msp = (1.0 - torch.max(pixel_probs, dim=0)[0]).cpu().numpy()
     anomaly_logit = (-torch.max(pixel_logits, dim=0)[0]).cpu().numpy()
@@ -214,7 +188,8 @@ def infer_single(model, img_tensor: torch.Tensor, img_size, device: str, tempera
     # probabilities are normalized to guarantee a valid prob distribution to evaluate entropy
     pixel_probs_norm = pixel_probs / (pixel_probs.sum(dim=0, keepdim=True) + 1e-8)
     anomaly_entropy = (-torch.sum(pixel_probs_norm * torch.log(pixel_probs_norm + 1e-8), dim=0)).cpu().numpy()
-    
+
+    # return raw logits to evaluate temp scaling baseline outside of the loop
     return anomaly_msp, anomaly_logit, anomaly_entropy
 
 # rejected by all inference
@@ -242,14 +217,12 @@ def infer_single_rba(model, img_tensor, img_size, device):
         # class_probs = torch.softmax(class_logits, dim=-1)  # (B, Q, C+1)
         # id_probs    = class_probs[..., :-1].sum(dim=-1)    # (B, Q) — ID prob for the query
 
-        # FIX
         # retrieve spacial geometry by getting toghether the crops
         mask_logits = model.revert_window_logits_semantic(mask_logits, origins, img_sizes)[0]  # (Q, H, W)
         class_logits = class_logits[0]  # (Q, num_classes + 1)
         mask_logits = mask_logits.float()
         class_logits = class_logits.float()
 
-        # FIX 
         # evaluate prob that every query belongs to a known class
         class_probs = torch.softmax(class_logits, dim=-1)  # (Q, num_classes + 1)
         id_probs = class_probs[:, :-1].sum(dim=-1)         # Shape: (Q,)
@@ -257,7 +230,6 @@ def infer_single_rba(model, img_tensor, img_size, device):
         # mask_logits: (B, Q, H, W) — sigmoid per probabilità di appartenenza
         mask_probs  = torch.sigmoid(mask_logits)           # (B, Q, H, W)
 
-        #FIX
         # expand dimensions to abilitate pixel-to-pixel broadcasting
         id_probs = id_probs[:, None, None]  # Shape: (Q, 1, 1)
 
@@ -265,18 +237,10 @@ def infer_single_rba(model, img_tensor, img_size, device):
         #id_probs    = id_probs[..., None, None]            # (B, Q, 1, 1)
         #rba_score   = (mask_probs * id_probs).max(dim=1)[0]  # (B, H, W)
 
-        #rba_score   = model.revert_window_logits_semantic(
-        #    rba_score.unsqueeze(1), origins, img_sizes
-        #)[0][0]  # (H, W)
-
-        # FIX
         # evaluate probs that a pixel DOES NOT belong to a valid class for the q-th query
         rejected_by_query = 1.0 - (mask_probs * id_probs)  # Shape: (Q, H, W)
 
     # anomaly = bassa appartenenza a qualsiasi maschera ID
-    #anomaly_rba = (1.0 - rba_score.float()).cpu().numpy()
-
-    # FIX
     anomaly_rba = torch.prod(rejected_by_query, dim=0).cpu().numpy()  # Shape: (H, W)
     return anomaly_rba
 
@@ -307,7 +271,7 @@ def main():
         nargs="+",
         help="Glob pattern for input images, e.g. 'path/to/images/*.png'",
     )
-    parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--temperature", type=float, nargs="+", default=[0.5, 0.75, 1.1, 1.25, 1.5])
     parser.add_argument(
         "--config",
         default="../configs/dinov2/cityscapes/semantic/eomt_base_640.yaml",
@@ -350,9 +314,12 @@ def main():
     # image inference loop
     anomaly_score_list         = []
     anomaly_score_list_logit   = []
+    anomaly_score_list_temp    = {t: [] for t in args.temperature}
     anomaly_score_list_entropy = []
     anomaly_score_list_rba     = []
     ood_gts_list               = []
+    class_logit_list           = []
+    mask_probs_list            = []
 
     pattern = os.path.expanduser(str(args.input[0]))
     paths = sorted(glob.glob(pattern))
@@ -377,8 +344,8 @@ def main():
         # convert to uint8 tensor (C, H, W) as expected by window_imgs_semantic
         img_tensor = torch.from_numpy(np.array(pil_img)).permute(2, 0, 1)  # uint8 (C,H,W)
 
-        anomaly_msp, anomaly_logit, anomaly_entropy = infer_single(
-            model, img_tensor, img_size, device, temperature=args.temperature
+        anomaly_msp, anomaly_logit, anomaly_entropy, class_logit, mask_probs = infer_single(
+            model, img_tensor, img_size, device
         )
         anomaly_rba = infer_single_rba(model, img_tensor, img_size, device)
         
@@ -408,6 +375,8 @@ def main():
         anomaly_score_list_logit.append(anomaly_logit)
         anomaly_score_list_entropy.append(anomaly_entropy)
         anomaly_score_list_rba.append(anomaly_rba)
+        class_logit_list.append(class_logit)
+        mask_probs_list.append(mask_probs)
 
         torch.cuda.empty_cache()
 
@@ -442,11 +411,22 @@ def main():
     auprc_logit,   fpr_logit   = compute_metrics(anomaly_scores_logit,   ood_mask, ind_mask, "MaxLogit")
     auprc_entropy, fpr_entropy = compute_metrics(anomaly_scores_entropy, ood_mask, ind_mask, "Entropy")
     auprc_rba, fpr_rba         = compute_metrics(np.array(anomaly_score_list_rba), ood_mask, ind_mask, "RbA")
+    aupcr_temp = []
+    fpr_temp = []
+    for t in args.temperature:
+        # class_logit_list is a tensor list (Q, C+1), one for every image
+        anomaly_scores_t = []
+        for cl, mp in zip(class_logit_list, mask_probs_list):
+            id_logits_t = cl[:, :-1] / t                                    # (Q, num_classes)
+            pixel_logits_t = torch.einsum("qc,qhw->chw", id_logits_t, mp)  # (num_classes, H, W)
+            anomaly_scores_t.append((-torch.max(pixel_logits_t, dim=0)[0]).numpy())
+        aupcr_temp[t], fpr_temp[t] = compute_metrics(np.array(anomaly_scores_t), ood_mask, ind_mask, f"MaxLogit T={t}")
 
     result_file.write(
         f"  AUPRC (MSP): {auprc_msp*100:.2f}%   FPR@TPR95 (MSP): {fpr_msp*100:.2f}%"
         f"  |  AUPRC (MaxLogit): {auprc_logit*100:.2f}%   FPR@TPR95 (MaxLogit): {fpr_logit*100:.2f}%"
         f"  |  AUPRC (Entropy): {auprc_entropy*100:.2f}%   FPR@TPR95 (Entropy): {fpr_entropy*100:.2f}%\n"
+        f"  |  AUPCR (Temp Scaling): {aupcr_temp*100:.2f}%   FPR@TPR95 (Temp Scaling): {frp_temp*100:.2f}%\n"
     )
     result_file.close()
 
