@@ -190,7 +190,7 @@ def infer_single(model, img_tensor: torch.Tensor, img_size, device: str):
     anomaly_entropy = (-torch.sum(pixel_probs_norm * torch.log(pixel_probs_norm + 1e-8), dim=0)).cpu().numpy()
 
     # return raw logits to evaluate temp scaling baseline outside of the loop
-    return anomaly_msp, anomaly_logit, anomaly_entropy
+    return anomaly_msp, anomaly_logit, anomaly_entropy,class_logits.cpu(), mask_probs.cpu()
 
 # rejected by all inference
 
