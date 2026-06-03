@@ -178,16 +178,17 @@ def infer_single(model, img_tensor: torch.Tensor, img_size, device: str):
     class_probs = torch.softmax(id_class_logits, dim=-1) # shape (q, numclasses)
 
     # spacial projection to get P(class|query)*P(query|pixel) = P(class|pixel)
-    pixel_probs = torch.einsum("qc,qhw->chw", class_probs, mask_probs)      # Shape: (num_classes, H, W)
+    #(previous version better for msp, worse for entropy) pixel_probs = torch.einsum("qc,qhw->chw", class_probs, mask_probs)      # Shape: (num_classes, H, W)
     pixel_logits = torch.einsum("qc,qhw->chw", id_class_logits, mask_probs)  # Shape: (num_classes, H, W)
-
+    pixel_probs = torch.softmax(pixel_logits, dim=0)
+    
     # evaluate the metrics
     anomaly_msp = (1.0 - torch.max(pixel_probs, dim=0)[0]).cpu().numpy()
     anomaly_logit = (-torch.max(pixel_logits, dim=0)[0]).cpu().numpy()
 
     # probabilities are normalized to guarantee a valid prob distribution to evaluate entropy
-    pixel_probs_norm = pixel_probs / (pixel_probs.sum(dim=0, keepdim=True) + 1e-8)
-    anomaly_entropy = (-torch.sum(pixel_probs_norm * torch.log(pixel_probs_norm + 1e-8), dim=0)).cpu().numpy()
+    # no need for forced normalization in this version, pixel_probs_norm = pixel_probs / (pixel_probs.sum(dim=0, keepdim=True) + 1e-8)
+    anomaly_entropy = (-torch.sum(pixel_probs * torch.log(pixel_probs + 1e-8), dim=0)).cpu().numpy()
 
     # return raw logits to evaluate temp scaling baseline outside of the loop
     return anomaly_msp, anomaly_logit, anomaly_entropy,class_logits.cpu(), mask_probs.cpu()
@@ -420,7 +421,10 @@ def main():
         for cl, mp in zip(class_logit_list, mask_probs_list):
             id_logits_t = cl[:, :-1] / t
             class_probs_t = torch.softmax(id_logits_t, dim=-1)
-            pixel_probs_t = torch.einsum("qc,qhw->chw", class_probs_t, mp)
+            # pixel_probs_t = torch.einsum("qc,qhw->chw", class_probs_t, mp)
+            # new version 
+            pixel_logits_t = torch.einsum("qc,qhw->chw", cl[:, :-1], mp) / t
+            pixel_probs_t = torch.softmax(pixel_logits_t, dim=0)
         
             # MSP
             anomaly_msp_t.append((1.0 - torch.max(pixel_probs_t, dim=0)[0]).numpy())
