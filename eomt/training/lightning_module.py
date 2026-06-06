@@ -179,6 +179,8 @@ class LightningModule(lightning.LightningModule):
         mask_logits_per_block, class_logits_per_block = self(imgs)
 
         losses_all_blocks = {}
+        # lambda_eim = 0.01 peso della EIM loss 
+        
         for i, (mask_logits, class_logits) in enumerate(
             list(zip(mask_logits_per_block, class_logits_per_block))
         ):
@@ -190,6 +192,32 @@ class LightningModule(lightning.LightningModule):
             block_postfix = self.block_postfix(i)
             losses = {f"{key}{block_postfix}": value for key, value in losses.items()}
             losses_all_blocks |= losses
+
+        # implementazione della EIM loss
+        # vorremmo valutare l'isotropia lungo la dimensione delle classi
+        # B,Q,C = class_logits.shape()
+        # reshape per trattare tutte le query come campioni indipendenti
+        # logits_flat = class:logits.view(-1,C)
+
+        # centriamo i logit rispetto alla media per calcolare la correlazione
+        # logits_centered = logits_flat - logits_flat.mean(dim=0, keepdim= True)
+
+        # calcoliamo la covarianza empirica [C,C]
+        # rappresentiamo quanto le classi si sovrappongano geometricamente
+        # covariance_matrix = torch.matmul(logits_centered.t(), logits_centered) / (B*Q-1+1e-7)
+
+        # l'obiettivo dell'isotropia è spingere la correlazione extradiagonal a 0
+        # creiamo dunque una matrice eye 
+        # identity = torch.eye(C, device=class_logits.device)
+
+        # la EIM loss è l'errore quadratico medio (MSE) tra correlazione e identità
+        # eim_loss = torch.mean((correlation_matrix - identity)**2)
+
+        # aggiungiamo la EIM loss al dizionario
+        # losses_all_blocks[f"loss_eim{block_postfix}"] = eim_loss*lambda_eim
+
+        # monitoriamo il valore sui grafici (WandB)
+        # self.log(f"logit_metrics/eim_loss{block_postfix}", eim_loss, on_step=True, on_epoch=False)
 
         return self.criterion.loss_total(losses_all_blocks, self.log)
 
