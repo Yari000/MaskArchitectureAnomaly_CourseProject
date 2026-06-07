@@ -68,15 +68,16 @@ class CityscapesSemantic(LightningDataModule):
             "target_parser": self.target_parser,
             "check_empty_targets": self.check_empty_targets,
         }
+        # update path to match downloaded data
         self.cityscapes_train_dataset = Dataset(
             transforms=self.transforms,
-            img_folder_path_in_zip=Path("./leftImg8bit/train"),
-            target_folder_path_in_zip=Path("./gtFine/train"),
+            img_folder_path_in_zip=Path("./leftImg8bit_trainvaltest/leftImg8bit/train"),
+            target_folder_path_in_zip=Path("./gtFine_trainvaltest/gtFine/train"),
             **cityscapes_dataset_kwargs,
         )
         self.cityscapes_val_dataset = Dataset(
-            img_folder_path_in_zip=Path("./leftImg8bit/val"),
-            target_folder_path_in_zip=Path("./gtFine/val"),
+            img_folder_path_in_zip=Path("./leftImg8bit_trainvaltest/leftImg8bit/val"),
+            target_folder_path_in_zip=Path("./gtFine_trainvaltest/gtFine/val"),
             **cityscapes_dataset_kwargs,
         )
 
