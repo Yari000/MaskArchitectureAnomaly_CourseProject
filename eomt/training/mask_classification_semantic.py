@@ -81,6 +81,30 @@ class MaskClassificationSemantic(LightningModule):
 
         self.init_metrics_semantic(ignore_idx, self.network.num_blocks + 1 if self.network.masked_attn_enabled else 1)
 
+    # fine tune only the classification head, freeze all the rest
+    def on_fit_start(self):
+      # debug 
+      for name, module in self.network.named_children():
+          print(name)
+
+      # freeze the whole net
+      for param in self.network.parameters():
+        param.requires_grad = False
+      
+      # unfreeze only the prediction head
+      for param in self.network.class_predictor.parameters():
+        param.requires_grad = True
+
+      # unfeeeze the learnable queries
+      for param in self.network.query_embeddings.parameters():
+        param.requires_grad = True
+
+      # verify how many learnable params
+      trainable = sum(p.numel() for p in self.network.parameters() if p.requires_grad)
+      total = sum(p.numel() for p in self.network.parameters())
+      print(f"Trainable params: {trainable:,} / {total:,} ({100*trainable/total:.1f}%)")
+
+
     def eval_step(
         self,
         batch,
