@@ -92,11 +92,11 @@ class MaskClassificationSemantic(LightningModule):
         param.requires_grad = False
       
       # unfreeze only the prediction head
-      for param in self.network.class_predictor.parameters():
+      for param in self.network.class_head.parameters():
         param.requires_grad = True
 
       # unfeeeze the learnable queries
-      for param in self.network.query_embeddings.parameters():
+      for param in self.network.q.parameters():
         param.requires_grad = True
 
       # verify how many learnable params
