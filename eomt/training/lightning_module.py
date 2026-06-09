@@ -195,12 +195,12 @@ class LightningModule(lightning.LightningModule):
             losses_all_blocks |= losses
 
             # EIM loss implementation
-              if i == len(mask_logits_per_block)-1:
+            if i == len(mask_logits_per_block)-1:
         
             # vorremmo valutare l'isotropia lungo la dimensione delle classi
-                B,Q,C = class_logits.shape()
+                B,Q,C = class_logits.shape
             # reshape per trattare tutte le query come campioni indipendenti
-                logits_flat = class:logits.view(-1,C)
+                logits_flat = class_logits.view(-1,C)
 
             # centriamo i logit rispetto alla media per calcolare la correlazione
                 logits_centered = logits_flat - logits_flat.mean(dim=0, keepdim= True)
