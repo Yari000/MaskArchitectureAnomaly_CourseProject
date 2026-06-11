@@ -1,0 +1,35 @@
+## CONFIG YAML per outlier exposure 
+
+trainer:
+  max_epochs: 107
+  logger:
+    class_path: lightning.pytorch.loggers.wandb.WandbLogger
+    init_args:
+      resume: allow
+      project: "eomt"
+      name: "cityscapes_semantic_eomt_rba_oe"
+model:
+  class_path: training.mask_classification_semantic.MaskClassificationSemantic
+  init_args:
+    attn_mask_annealing_enabled: True
+    attn_mask_annealing_start_steps: [3317, 8292, 13268]
+    attn_mask_annealing_end_steps: [6634, 11609, 16585]
+    network:
+      class_path: models.eomt.EoMT
+      init_args:
+        num_q: 100
+        num_blocks: 3
+        encoder:
+          class_path: models.vit.ViT
+          init_args:
+            backbone_name: vit_base_patch14_reg4_dinov2
+data:
+  class_path: datasets.cityscape_coco_paste.CityscapesCOCOPaste
+  init_args:
+    path: /content/drive/MyDrive/Anomaly_Segmentation_Datasets/Cityscapes
+    coco_img_dir: /content/coco/val2017
+    coco_ann_file: /content/coco/annotations/instances_val2017.json
+    paste_prob: 0.5
+    num_patches_range: [1, 3]
+    min_area: 1000
+    paste_scale_range: [0.05, 0.2]
