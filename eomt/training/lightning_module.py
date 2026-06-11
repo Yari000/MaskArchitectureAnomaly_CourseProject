@@ -173,15 +173,28 @@ class LightningModule(lightning.LightningModule):
 
         return self.network(x)
 
-    def training_step(self, batch, batch_idx):
+   def training_step(self, batch, batch_idx):
         imgs, targets = batch
 
+        # outlier exposure implementation
+        outlier_mask= []
+        for t in targets:
+          if "outlier_mask" in t:
+            outlier_mask.append(t.pop("outlier_mask")) # rumuove prima di passarlo 
+          else:
+            H,W = imgs.shape[-2:]
+            outlier_mask.append(torch.zeros(H, W, dtype= torch.bool, device= imgs.device))
+        
         mask_logits_per_block, class_logits_per_block = self(imgs)
 
         losses_all_blocks = {}
+        # per fare fine tuning solo su una specifica area, disattivare un lambda (l=0)
+        lambda_rba = 0.01    # RBA loss weight
         lambda_eim = 0.01    # EIM loss weight
-        eim_loss = torch.tensor(0.0) # initialize
-        
+        rba_loss = torch.tensor(0.0, device=imgs.device)
+        eim_loss = torch.tensor(0.0, device=imgs.device) # initialize
+        alpha= 5.0 # soglia per pixel ood (da paper)
+
         for i, (mask_logits, class_logits) in enumerate(
             list(zip(mask_logits_per_block, class_logits_per_block))
         ):
@@ -221,9 +234,42 @@ class LightningModule(lightning.LightningModule):
 
             # monitoriamo il valore sui grafici (WandB)
                 self.log(f"logit_metrics/eim_loss{block_postfix}", eim_loss, on_step=True, on_epoch=False)
+        
+
+            # RBA loss 
+            # --- RbA loss su pixel OOD ---
+            # mask_logits: (B, Q, H_feat, W_feat) — interpoliamo a img_size
+                mask_probs = torch.sigmoid(
+                    interpolate(mask_logits, self.img_size, mode="bilinear", align_corners=False)
+                )  # (B, Q, H, W)
+
+            # class_probs: (B, Q, C) -> softmax sulle classi
+                class_probs = torch.softmax(class_logits, dim=-1)  # (B, Q, C)
+
+            # pixel probs: p_k(x) = sum_q [ class_probs_q_k * mask_probs_q(x) ]
+            # einsum: (B,Q,C) x (B,Q,H,W) -> (B,C,H,W)
+                pixel_probs = torch.einsum("bqc,bqhw->bchw", class_probs, mask_probs)  # (B, C, H, W)
+
+            # RbA(x) = max_k [ p_k * (1 - p_k) ] * C
+                rba_map = (pixel_probs * (1.0 - pixel_probs)).max(dim=1).values * C  # (B, H, W)
+
+            # Hinge loss su pixel OOD: sum max(0, alpha - RbA(x))^2
+            # outlier_masks: lista di (H,W) bool -> stack -> (B,H,W)
+                outlier_stack = torch.stack(outlier_masks).to(imgs.device)  # (B, H, W)
+
+                if outlier_stack.any():
+                    rba_ood = rba_map[outlier_stack]  # (N_ood_pixels,)
+                    rba_loss = (torch.clamp(alpha - rba_ood, min=0.0) ** 2).mean()
+            # se non ci sono pixel OOD nel batch, rba_loss resta 0
+            # log (Wandb)
+                self.log(f"logit_metrics/rba_loss{block_postfix}", rba_loss, on_step=True, on_epoch=False)
+                self.log(f"logit_metrics/rba_ood_mean{block_postfix}", 
+                         rba_map[outlier_stack].mean() if outlier_stack.any() else 0.0,
+                         on_step=True, on_epoch=False)
 
         total_loss =  self.criterion.loss_total(losses_all_blocks, self.log)
-        return total_loss + eim_loss*lambda_eim
+        return total_loss + eim_loss*lambda_eim + rba_loss*lambda_rba  # la loss restituita è la somma pesata
+
 
     def validation_step(self, batch, batch_idx=0):
         return self.eval_step(batch, batch_idx, "val")
