@@ -173,7 +173,7 @@ class LightningModule(lightning.LightningModule):
 
         return self.network(x)
 
-   def training_step(self, batch, batch_idx):
+    def training_step(self, batch, batch_idx):
         imgs, targets = batch
 
         # outlier exposure implementation
@@ -191,8 +191,11 @@ class LightningModule(lightning.LightningModule):
         # per fare fine tuning solo su una specifica area, disattivare un lambda (l=0)
         lambda_rba = 0.01    # RBA loss weight
         lambda_eim = 0.01    # EIM loss weight
+        lambda_logitnorm = 0.01  # LogitNorm loss weight
+        tau_logitnorm = 0.04     # temperatura LogitNorm (da paper, probabilmente da tunare)
         rba_loss = torch.tensor(0.0, device=imgs.device)
         eim_loss = torch.tensor(0.0, device=imgs.device) # initialize
+        logitnorm_loss = torch.tensor(0.0, device=imgs.device) # initialize
         alpha= 5.0 # soglia per pixel ood (da paper)
 
         for i, (mask_logits, class_logits) in enumerate(
@@ -234,11 +237,27 @@ class LightningModule(lightning.LightningModule):
 
             # monitoriamo il valore sui grafici (WandB)
                 self.log(f"logit_metrics/eim_loss{block_postfix}", eim_loss, on_step=True, on_epoch=False)
-        
+
+
+            # LogitNorm loss implementation 
+            # LogitNorm (Wei 2022) penalizza la norma dei logit per classe,
+            # disaccoppiando la "direzione" (info di classe) dalla "magnitudine" (|over|confidence).
+            # Calcoliamo la norma L2 dei class_logits per ogni query e la usiamo per
+            # normalizzare i logit, poi penalizziamo la norma stessa (o equivalentemente
+            # incoraggiamo norma costante = 1/tau).
+                logit_norms = class_logits.norm(dim=-1)  # (B, Q)
+
+            # la loss spinge la norma verso un valore target (1/tau), penalizzando
+            # deviazioni quadratiche dalla norma desiderata
+                target_norm = 1.0 / tau_logitnorm
+                logitnorm_loss = torch.mean((logit_norms - target_norm) ** 2)
+
+            # log (WandB)
+                self.log(f"logit_metrics/logitnorm_loss{block_postfix}", logitnorm_loss, on_step=True, on_epoch=False)
 
             # RBA loss 
             # --- RbA loss su pixel OOD ---
-            # mask_logits: (B, Q, H_feat, W_feat) — interpoliamo a img_size
+            # mask_logits: (B, Q, H_feat, W_feat), interpoliamo a img_size
                 mask_probs = torch.sigmoid(
                     interpolate(mask_logits, self.img_size, mode="bilinear", align_corners=False)
                 )  # (B, Q, H, W)
@@ -255,11 +274,12 @@ class LightningModule(lightning.LightningModule):
 
             # Hinge loss su pixel OOD: sum max(0, alpha - RbA(x))^2
             # outlier_masks: lista di (H,W) bool -> stack -> (B,H,W)
-                outlier_stack = torch.stack(outlier_masks).to(imgs.device)  # (B, H, W)
+                outlier_stack = torch.stack(outlier_mask).to(imgs.device)  # (B, H, W)
 
                 if outlier_stack.any():
                     rba_ood = rba_map[outlier_stack]  # (N_ood_pixels,)
                     rba_loss = (torch.clamp(alpha - rba_ood, min=0.0) ** 2).mean()
+                    
             # se non ci sono pixel OOD nel batch, rba_loss resta 0
             # log (Wandb)
                 self.log(f"logit_metrics/rba_loss{block_postfix}", rba_loss, on_step=True, on_epoch=False)
@@ -268,7 +288,7 @@ class LightningModule(lightning.LightningModule):
                          on_step=True, on_epoch=False)
 
         total_loss =  self.criterion.loss_total(losses_all_blocks, self.log)
-        return total_loss + eim_loss*lambda_eim + rba_loss*lambda_rba  # la loss restituita è la somma pesata
+        return total_loss + eim_loss*lambda_eim + logitnorm_loss*lambda_logitnorm + rba_loss*lambda_rba  # la loss restituita è la somma pesata
 
 
     def validation_step(self, batch, batch_idx=0):
