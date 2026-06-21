@@ -32,6 +32,7 @@ torch.backends.cudnn.benchmark = True
 
 IGNORE_INDEX = 255
 
+os.makedirs("/content/cached_logits", exist_ok=True)
 
 # loading the model
 
@@ -170,7 +171,7 @@ def infer_single(model, img_tensor: torch.Tensor, img_size, device: str):
 
     # Evaluate prob distribution over all the classes (void included)
     class_probs_full = torch.softmax(class_logits, dim=-1) # shape (q, numclasses+1)
-    class_probs_id = class_probs_full[:,:,-1]              # shape (q, numclasses)
+    class_probs_id = class_probs_full[:,:-1]              # shape (q, numclasses)
     pixel_probs = torch.einsum("qc,qhw->chw", class_probs_id, mask_probs)  # [C, H, W]
     
     # evaluate the metrics
@@ -439,12 +440,8 @@ def main():
             (-torch.sum(pixel_probs_norm_t * torch.log(pixel_probs_norm_t + 1e-8), dim=0)).numpy()
         )
 
-        # MaxLogit: logit grezzi divisi per T, VOID escluso prima, nessun softmax
-        pixel_logits_t = torch.einsum("qc,qhw->chw", cl[:, :-1], mp) / t
-        anomaly_logit_t.append((-torch.max(pixel_logits_t, dim=0)[0]).numpy())
-
-       compute_metrics(np.array(anomaly_msp_t), ood_mask, ind_mask, f"MSP T={t}")
-       compute_metrics(np.array(anomaly_entropy_t), ood_mask, ind_mask, f"Entropy T={t}")
+      compute_metrics(np.array(anomaly_msp_t), ood_mask, ind_mask, f"MSP T={t}")
+      compute_metrics(np.array(anomaly_entropy_t), ood_mask, ind_mask, f"Entropy T={t}")
      
 
 
