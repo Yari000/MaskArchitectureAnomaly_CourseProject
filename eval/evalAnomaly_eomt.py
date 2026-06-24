@@ -155,43 +155,41 @@ def infer_single(model, img_tensor: torch.Tensor, img_size, device: str):
         mask_logits  = F.interpolate(
             mask_logits_per_layer[-1], img_size, mode="bilinear", align_corners=False
         )
-        class_logits = class_logits_per_layer[-1]   # (B, Q, num_classes+1)
 
-        # before computing probs return to the original image dimension :(q,h,w)
-        mask_logits = model.revert_window_logits_semantic(mask_logits, origins, img_sizes)[0] 
-        class_logits = class_logits[0]  # (q, numclasses+1)
+        # estrai prima della combinazione, servono per query-level TS
+        class_logits = class_logits_per_layer[-1][0].float()  # [Q, C+1]
+        mask_probs   = torch.sigmoid(mask_logits[0]).float()  # [Q, H, W]
 
-        # FIX
-        # convert to float to avoid underflow
-        mask_logits = mask_logits.float()
-        class_logits = class_logits.float() 
+        # pipeline ufficiale 
+        crop_logits = model.to_per_pixel_logits_semantic(
+            mask_logits, class_logits_per_layer[-1]
+        )  # [B, C, H, W] in crop space
 
-    # transform spacial query logits into binary activation probs thru a sigmoid
-    mask_probs = torch.sigmoid(mask_logits)  # Shape: (Q, H, W)
+        logits = model.revert_window_logits_semantic(
+            crop_logits, origins, img_sizes
+        )
+        pixel_logits = logits[0].float()  # [C, H, W], C=19 per Cityscapes
+        class_logits = class_logits.float().cpu()
+        mask_probs   = mask_probs.float().cpu()
 
-    # Evaluate prob distribution over all the classes (void included)
-    class_probs_full = torch.softmax(class_logits, dim=-1) # shape (q, numclasses+1)
-    class_probs_id = class_probs_full[:,:-1]              # shape (q, numclasses)
-    pixel_probs = torch.einsum("qc,qhw->chw", class_probs_id, mask_probs)  # [C, H, W]
-    
-    # evaluate the metrics
-    anomaly_msp = (1.0 - torch.max(pixel_probs, dim=0)[0]).cpu().numpy()
+    # Compute the baselines
+    # MSP
+    pixel_probs = torch.softmax(pixel_logits, dim=0)          # [C, H, W]
+    anomaly_msp = (1.0 - pixel_probs.max(dim=0)[0]).cpu().numpy()
 
-    # probabilities are normalized to guarantee a valid prob distribution to evaluate entropy
-    pixel_probs_norm = pixel_probs / (pixel_probs.sum(dim=0, keepdim=True) + 1e-8)
-    anomaly_entropy = (-torch.sum(pixel_probs_norm * torch.log(pixel_probs_norm + 1e-8), dim=0)).cpu().numpy()
+    # Entropy
+    anomaly_entropy = (-torch.sum(pixel_probs * torch.log(pixel_probs + 1e-8), dim=0)).cpu().numpy()
 
-    # max logit only on ID classes
-    id_class_logits = class_logits[:, :-1]                                       # [Q, C]
-    pixel_logits_raw = torch.einsum("qc,qhw->chw", id_class_logits, mask_probs)  # [C, H, W]
-    anomaly_logit = (-torch.max(pixel_logits_raw, dim=0)[0]).cpu().numpy()
+    # Max Logit
+    anomaly_logit = (-pixel_logits.max(dim=0)[0]).cpu().numpy()
 
-    # VOID score for diagnostic
-    class_probs_void = class_probs_full[:, -1]              # [Q]
-    anomaly_void = torch.einsum("q,qhw->hw", class_probs_void, mask_probs).cpu().numpy()
-    
+    # Energy
+    T = 1.0
+    anomaly_energy = (-T * torch.logsumexp( pixel_logits / T, dim=0 )).cpu().numpy()
+
     # return also raw logits to evaluate temp scaling baseline outside of the loop
-    return anomaly_msp, anomaly_logit, anomaly_entropy,class_logits.cpu(), mask_probs.cpu(), anomaly_void
+    return anomaly_msp, anomaly_logit, anomaly_entropy, anomaly_energy, pixel_logits.cpu(), class_logits.cpu(), mask_probs.cpu()
+
 
 # rejected by all inference
 
@@ -317,7 +315,7 @@ def main():
     anomaly_score_list_logit   = []
     anomaly_score_list_entropy = []
     anomaly_score_list_rba     = []
-    anomaly_score_list_void    = []
+    anomaly_score_list_energy  = []
     ood_gts_list               = []
     valid_paths                = []  # track only images with ood pixels
 
@@ -370,9 +368,11 @@ def main():
             print("  No OOD pixels – skipping.")
             continue
 
-        # save cache logits for temp scaling 
+        # save cache for temp scaling and q-level temp scaling
         torch.save(
-            {"class_logit": class_logit, "mask_probs": mask_probs},
+            {"pixel_logits": pixel_logits,
+             "class_logits":  class_logits.cpu(),   # [Q, C+1] per query-level TS
+             "mask_probs":    mask_probs.cpu()},      # [Q, H, W] per query-level TS
             f"/content/cached_logits/{os.path.basename(path)}.pt"
         )
 
@@ -381,7 +381,7 @@ def main():
         anomaly_score_list_logit.append(anomaly_logit)
         anomaly_score_list_entropy.append(anomaly_entropy)
         anomaly_score_list_rba.append(anomaly_rba)
-        anomaly_score_list_void.append(anomaly_void)
+        anomaly_score_list_energy.append(anomaly_energy)
         valid_paths.append(path)  
 
         torch.cuda.empty_cache()
@@ -396,7 +396,7 @@ def main():
     anomaly_scores         = np.array(anomaly_score_list)          # (N, H, W)
     anomaly_scores_logit   = np.array(anomaly_score_list_logit)
     anomaly_scores_entropy = np.array(anomaly_score_list_entropy)
-    anomaly_scores_void = np.array(anomaly_score_list_void)
+    anomaly_scores_energy  = np.array(anomaly_score_list_energy)
 
     valid_mask = (ood_gts != IGNORE_INDEX)
     ood_mask   = (ood_gts == 1) & valid_mask
@@ -418,33 +418,57 @@ def main():
     auprc_logit,   fpr_logit   = compute_metrics(anomaly_scores_logit,   ood_mask, ind_mask, "MaxLogit")
     auprc_entropy, fpr_entropy = compute_metrics(anomaly_scores_entropy, ood_mask, ind_mask, "Entropy")
     auprc_rba, fpr_rba         = compute_metrics(np.array(anomaly_score_list_rba), ood_mask, ind_mask, "RbA")
-    auprc_void, fpr_void = compute_metrics(anomaly_scores_void, ood_mask, ind_mask, "Void")
-
+    aupcr_energy, fpr_energy   = compute_metrics(anomaly_scores_energy, ood_mask, ind_mask, "energy")
 
     # compute temp scaling in range --temperature
-    for i, t in enumerate(args.temperature):
-      anomaly_msp_t, anomaly_entropy_t = [], []
-      for path in valid_paths:
-        cached = torch.load(f"/content/cached_logits/{os.path.basename(path)}.pt")
-        cl = cached["class_logit"].float()   # [Q, C+1]
-        mp = cached["mask_probs"].float()    # [Q, H, W]
+    for t in args.temperature:
+        # only probability-based baseline (and energy) are considered
+        anomaly_msp_t, anomaly_entropy_t, anomaly_energy_t = [], [], []
+        for path in valid_paths:
+            cached = torch.load(f"/content/cached_logits/{os.path.basename(path)}.pt")
+            pl = cached["pixel_logits"].float()  # [C, H, W]
 
-        # MSP e Entropy: softmax completo su cl/T poi taglia VOID
-        class_probs_full_t = torch.softmax(cl / t, dim=-1)
-        class_probs_id_t = class_probs_full_t[:, :-1]
-        pixel_probs_t = torch.einsum("qc,qhw->chw", class_probs_id_t, mp)
+            # applica temperatura sui pixel logits
+            probs_t = torch.softmax(pl / t, dim=0)  # [C, H, W]
 
-        anomaly_msp_t.append((1.0 - torch.max(pixel_probs_t, dim=0)[0]).numpy())
-        pixel_probs_norm_t = pixel_probs_t / (pixel_probs_t.sum(dim=0, keepdim=True) + 1e-8)
-        anomaly_entropy_t.append(
-            (-torch.sum(pixel_probs_norm_t * torch.log(pixel_probs_norm_t + 1e-8), dim=0)).numpy()
-        )
+            anomaly_msp_t.append((1.0 - probs_t.max(dim=0)[0]).numpy())
+            anomaly_entropy_t.append(
+                (-torch.sum(probs_t * torch.log(probs_t + 1e-8), dim=0)).numpy()
+            )
+            anomaly_energy_t.append(
+                (-t * torch.logsumexp(pl / t, dim=0)).numpy()
+            )
 
-      compute_metrics(np.array(anomaly_msp_t), ood_mask, ind_mask, f"MSP T={t}")
-      compute_metrics(np.array(anomaly_entropy_t), ood_mask, ind_mask, f"Entropy T={t}")
-     
+        compute_metrics(np.array(anomaly_msp_t),     ood_mask, ind_mask, f"MSP     T={t}")
+        compute_metrics(np.array(anomaly_entropy_t), ood_mask, ind_mask, f"Entropy T={t}")
+        compute_metrics(np.array(anomaly_energy_t),  ood_mask, ind_mask, f"Energy  T={t}")
+    
+    # query-level temp scaling (per alcuni dataset si è rivelata molto più efficace)
+    for t in args.temperature:
+        # applicata alle sole baseline probabilistiche
+        anomaly_msp_qt, anomaly_entropy_qt = [], []
+        for path in valid_paths:
+            cached = torch.load(f"/content/cached_logits/{os.path.basename(path)}.pt")
+            cl = cached["class_logits"].float()   # [Q, C+1]
+            mp = cached["mask_probs"].float()      # [Q, H, W]
 
+            # T applicata sui class_logits per-query, PRIMA dell'einsum
+            class_probs_t    = torch.softmax(cl / t, dim=-1)  # [Q, C+1]
+            class_probs_id_t = class_probs_t[:, :-1]          # [Q, C]
+            pixel_probs_t    = torch.einsum("qc,qhw->chw", class_probs_id_t, mp)  # [C, H, W]
 
+            # normalizza per avere una distribuzione valida per l'entropy
+            pixel_probs_norm = pixel_probs_t / (pixel_probs_t.sum(0, keepdim=True) + 1e-8)
+
+            anomaly_msp_qt.append((1.0 - pixel_probs_t.max(0)[0]).numpy())
+            anomaly_entropy_qt.append(
+                (-torch.sum(pixel_probs_norm * torch.log(pixel_probs_norm + 1e-8), dim=0)).numpy()
+            )
+
+        compute_metrics(np.array(anomaly_msp_qt),     ood_mask, ind_mask, f"MSP     query-T={t}")
+        compute_metrics(np.array(anomaly_entropy_qt), ood_mask, ind_mask, f"Entropy query-T={t}")
+
+ 
     result_file.write(
         f"  AUPRC (MSP): {auprc_msp*100:.2f}%   FPR@TPR95 (MSP): {fpr_msp*100:.2f}%"
         f"  |  AUPRC (MaxLogit): {auprc_logit*100:.2f}%   FPR@TPR95 (MaxLogit): {fpr_logit*100:.2f}%"
