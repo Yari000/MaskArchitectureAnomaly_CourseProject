@@ -220,34 +220,21 @@ def infer_semantic(model, img_tensor: torch.Tensor, img_size, device: str) -> to
     dtype = torch.float16 if device != "cpu" else torch.float32
 
     with torch.no_grad(), autocast(dtype=dtype, device_type=device):
-        imgs = [img_tensor.to(device)]
+        imgs      = [img_tensor.to(device)]
         img_sizes = [img_tensor.shape[-2:]]
-
-        # sliding-window preprocessing (official EoMT pipeline)
         crops, origins = model.window_imgs_semantic(imgs)
-
         mask_logits_per_layer, class_logits_per_layer = model(crops)
-
-        # use last decoder layer (best quality)
         mask_logits = F.interpolate(
             mask_logits_per_layer[-1], img_size, mode="bilinear", align_corners=False
         )
-        class_logits = class_logits_per_layer[-1]  # (B, Q, num_classes+1)
+        crop_logits = model.to_per_pixel_logits_semantic(
+            mask_logits, class_logits_per_layer[-1]
+        )
+        logits = model.revert_window_logits_semantic(crop_logits, origins, img_sizes)
+        pixel_logits = logits[0].float().cpu()  # [C, H, W]
 
-        mask_logits = model.revert_window_logits_semantic(mask_logits, origins, img_sizes)[0]
-        class_logits = class_logits[0]  # (Q, num_classes+1)
-
-        mask_logits = mask_logits.float()
-        class_logits = class_logits.float()
-
-    mask_probs = torch.sigmoid(mask_logits)                              # [Q, H, W]
-    class_probs_full = torch.softmax(class_logits, dim=-1)               # [Q, C+1]
-    class_probs_id = class_probs_full[:, :-1]                            # [Q, C]  (drop void)
-    pixel_probs = torch.einsum("qc,qhw->chw", class_probs_id, mask_probs)  # [C, H, W]
-
-    pred = torch.argmax(pixel_probs, dim=0).cpu()                        # [H, W], values in [0, C-1]
+    pred = torch.argmax(pixel_logits, dim=0)  # [H, W]
     return pred
-
 
 # MAIN----------------------------------
 
