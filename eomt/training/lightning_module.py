@@ -256,55 +256,108 @@ class LightningModule(lightning.LightningModule):
                 self.log(f"logit_metrics/logitnorm_loss{block_postfix}", logitnorm_loss, on_step=True, on_epoch=False)
 
             if lambda_rba > 0 and i == len(mask_logits_per_block) - 1:
-            # Costruisci logit pixel-wise (stessa formula dello score a inferenza)
-                   mask_probs_rba = torch.sigmoid(
-                   interpolate(mask_logits, self.img_size,
-                   mode="bilinear", align_corners=False)
-                   )  # (B, Q, H, W)
 
-       # pixel_logits: (B, C+1, H, W)
-                   # Sostituisci l'einsum con la pipeline ufficiale
-                   with torch.no_grad():
-                       pixel_logits_rba = self.network.to_per_pixel_logits_semantic(
-                       mask_logits.unsqueeze(0),  # adatta le dimensioni se necessario
-                       class_logits.unsqueeze(0)
-                       )  # (B, C, H, W)
+    # stessa risoluzione usata a inferenza
+                 mask_logits_up = interpolate(
+                 mask_logits,
+                 self.img_size,
+                 mode="bilinear",
+                 align_corners=False
+                )
 
-                   sigma_rba = (torch.tanh(pixel_logits_rba) + 1.0) / 2.0
-                   rba_map_paper = -sigma_rba.sum(dim=1)  # (B, H, W)
+    # stessa formula usata in infer_single_rba
+                 pixel_logits_rba = torch.einsum(
+                 "bqhw,bqc->bchw",
+                  torch.sigmoid(mask_logits_up),
+                  torch.softmax(class_logits, dim=-1)[..., :-1]
+                 )
 
-        # Hinge loss su pixel OOD
-                   outlier_stack = torch.stack(outlier_mask).to(imgs.device)
-                   if outlier_stack.any():
-                      rba_ood = rba_map_paper[outlier_stack]
-        # alpha: soglia — nel paper alpha=5, ma con questa σ i valori
-        # sono in [-C, 0], quindi alpha va adattato (es. -C/2 o tunato)
-                      rba_loss = (torch.clamp(alpha + rba_ood, min=0.0) ** 2).mean()
-        # NB: alpha + rba_ood perché rba è negativo, equivalente a max(0, alpha - |rba|)
-                      
+    # score RbA
+                 sigma_rba = (torch.tanh(pixel_logits_rba) + 1.0) / 2.0
 
-    # DIAGNOSTICA--------------------------------------------------------
-                      with torch.no_grad():
-                          rba_id = rba_map_paper[~outlier_stack]
+    # (B,H,W)
+                 rba_map_paper = -sigma_rba.sum(dim=1)
 
-        # Distribuzione score OOD
-                          self.log(f"rba_diag/ood_mean{block_postfix}", rba_ood.mean())
-                          self.log(f"rba_diag/ood_min{block_postfix}",  rba_ood.min())
-                          self.log(f"rba_diag/ood_max{block_postfix}",  rba_ood.max())
+                 outlier_stack = torch.stack(outlier_mask).to(imgs.device)
 
-        # Distribuzione score ID, per vedere se c'è separazione
-                          self.log(f"rba_diag/id_mean{block_postfix}",  rba_id.mean())
+                 if outlier_stack.any():
 
-        # Frazione di pixel OOD su cui la hinge è attiva (loss > 0)
-        # Se è 1.0 alpha è troppo alto, se è 0.0 è troppo basso
-                          active_fraction = (alpha + rba_ood > 0).float().mean()
-                          self.log(f"rba_diag/hinge_active_fraction{block_postfix}", active_fraction)
+                    rba_ood = rba_map_paper[outlier_stack]
+                    rba_id  = rba_map_paper[~outlier_stack]
 
-        # Gap ID vs OOD 
-                          self.log(f"rba_diag/id_ood_gap{block_postfix}", rba_id.mean() - rba_ood.mean())
+        # loss
+                    rba_loss = (
+                     torch.clamp(alpha + rba_ood, min=0.0) ** 2
+                    ).mean()
 
-        # La loss stessa
-                          self.log(f"logit_metrics/rba_loss{block_postfix}", rba_loss)
+        # ----------------------------
+        # DIAGNOSTICA RbA
+        # ----------------------------
+
+                    self.log(
+                     f"rba_diag/ood_mean{block_postfix}",
+                     rba_ood.mean()
+                    )
+
+                    self.log(
+                     f"rba_diag/ood_std{block_postfix}",
+                     rba_ood.std()
+                    )
+
+                    self.log(
+                     f"rba_diag/id_mean{block_postfix}",
+                     rba_id.mean()
+                    )
+
+                    self.log(
+                     f"rba_diag/id_std{block_postfix}",
+                     rba_id.std()
+                    )
+
+                    self.log(
+                     f"rba_diag/id_ood_gap{block_postfix}",
+                     rba_id.mean() - rba_ood.mean()
+                    )
+
+                    active_fraction = (
+                     (alpha + rba_ood) > 0
+                    ).float().mean()
+
+                    self.log(
+                     f"rba_diag/hinge_active_fraction{block_postfix}",
+                     active_fraction
+                    )
+
+                    self.log(
+                     f"logit_metrics/rba_loss{block_postfix}",
+                     rba_loss
+                    )
+
+                    self.log(
+                     f"rba_diag/rba_map_mean{block_postfix}",
+                     rba_map_paper.mean()
+                    )
+
+                    self.log(
+                     f"rba_diag/rba_map_min{block_postfix}",
+                     rba_map_paper.min()
+                    )
+
+                    self.log(
+                     f"rba_diag/rba_map_max{block_postfix}",
+                     rba_map_paper.max()
+                    )
+
+                    self.log(
+                     f"rba_diag/sigma_mean{block_postfix}",
+                     sigma_rba.mean()
+                    )
+
+                    self.log(
+                     f"rba_diag/ood_pixel_ratio{block_postfix}",
+                     outlier_stack.float().mean()
+                    )
+                    
                       
                     
 
