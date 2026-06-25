@@ -190,13 +190,13 @@ class LightningModule(lightning.LightningModule):
         losses_all_blocks = {}
         # per fare fine tuning solo su una specifica area, disattivare un lambda (l=0)
         lambda_rba = 0.01    # RBA loss weight
-        lambda_eim = 0.01    # EIM loss weight
-        lambda_logitnorm = 0.01  # LogitNorm loss weight
-        tau_logitnorm = 0.04     # temperatura LogitNorm (da paper, probabilmente da tunare)
+        lambda_eim = 0.01    # LIR loss weight
+        lambda_logitnorm = 0.01  # LogitNormRegularization loss weight
+        tau_logitnorm = 1.0 / 16.77     # temperatura LogitNormRegularization (calcolata su una porzione di cityscapes)
         rba_loss = torch.tensor(0.0, device=imgs.device)
         eim_loss = torch.tensor(0.0, device=imgs.device) # initialize
         logitnorm_loss = torch.tensor(0.0, device=imgs.device) # initialize
-        alpha= 5.0 # soglia per pixel ood (da paper)
+        alpha= 5.0   # soglia per pixel ood (da paper rba)
 
         for i, (mask_logits, class_logits) in enumerate(
             list(zip(mask_logits_per_block, class_logits_per_block))
@@ -255,37 +255,58 @@ class LightningModule(lightning.LightningModule):
             # log (WandB)
                 self.log(f"logit_metrics/logitnorm_loss{block_postfix}", logitnorm_loss, on_step=True, on_epoch=False)
 
-            # RBA loss 
-            # --- RbA loss su pixel OOD ---
-            # mask_logits: (B, Q, H_feat, W_feat), interpoliamo a img_size
-                mask_probs = torch.sigmoid(
-                    interpolate(mask_logits, self.img_size, mode="bilinear", align_corners=False)
-                )  # (B, Q, H, W)
+            if lambda_rba > 0 and i == len(mask_logits_per_block) - 1:
+            # Costruisci logit pixel-wise (stessa formula dello score a inferenza)
+                   mask_probs_rba = torch.sigmoid(
+                   interpolate(mask_logits, self.img_size,
+                   mode="bilinear", align_corners=False)
+                   )  # (B, Q, H, W)
 
-            # class_probs: (B, Q, C) -> softmax sulle classi
-                class_probs = torch.softmax(class_logits, dim=-1)  # (B, Q, C)
+       # pixel_logits: (B, C+1, H, W)
+                   # Sostituisci l'einsum con la pipeline ufficiale
+                   with torch.no_grad():
+                       pixel_logits_rba = self.network.to_per_pixel_logits_semantic(
+                       mask_logits.unsqueeze(0),  # adatta le dimensioni se necessario
+                       class_logits.unsqueeze(0)
+                       )  # (B, C, H, W)
 
-            # pixel probs: p_k(x) = sum_q [ class_probs_q_k * mask_probs_q(x) ]
-            # einsum: (B,Q,C) x (B,Q,H,W) -> (B,C,H,W)
-                pixel_probs = torch.einsum("bqc,bqhw->bchw", class_probs, mask_probs)  # (B, C, H, W)
+                   sigma_rba = (torch.tanh(pixel_logits_rba) + 1.0) / 2.0
+                   rba_map_paper = -sigma_rba.sum(dim=1)  # (B, H, W)
 
-            # RbA(x) = max_k [ p_k * (1 - p_k) ] * C
-                rba_map = (pixel_probs * (1.0 - pixel_probs)).max(dim=1).values * C  # (B, H, W)
+        # Hinge loss su pixel OOD
+                   outlier_stack = torch.stack(outlier_mask).to(imgs.device)
+                   if outlier_stack.any():
+                      rba_ood = rba_map_paper[outlier_stack]
+        # alpha: soglia — nel paper alpha=5, ma con questa σ i valori
+        # sono in [-C, 0], quindi alpha va adattato (es. -C/2 o tunato)
+                      rba_loss = (torch.clamp(alpha + rba_ood, min=0.0) ** 2).mean()
+        # NB: alpha + rba_ood perché rba è negativo, equivalente a max(0, alpha - |rba|)
+                      
 
-            # Hinge loss su pixel OOD: sum max(0, alpha - RbA(x))^2
-            # outlier_masks: lista di (H,W) bool -> stack -> (B,H,W)
-                outlier_stack = torch.stack(outlier_mask).to(imgs.device)  # (B, H, W)
+    # DIAGNOSTICA--------------------------------------------------------
+                      with torch.no_grad():
+                          rba_id = rba_map_paper[~outlier_stack]
 
-                if outlier_stack.any():
-                    rba_ood = rba_map[outlier_stack]  # (N_ood_pixels,)
-                    rba_loss = (torch.clamp(alpha - rba_ood, min=0.0) ** 2).mean()
+        # Distribuzione score OOD
+                          self.log(f"rba_diag/ood_mean{block_postfix}", rba_ood.mean())
+                          self.log(f"rba_diag/ood_min{block_postfix}",  rba_ood.min())
+                          self.log(f"rba_diag/ood_max{block_postfix}",  rba_ood.max())
+
+        # Distribuzione score ID, per vedere se c'è separazione
+                          self.log(f"rba_diag/id_mean{block_postfix}",  rba_id.mean())
+
+        # Frazione di pixel OOD su cui la hinge è attiva (loss > 0)
+        # Se è 1.0 alpha è troppo alto, se è 0.0 è troppo basso
+                          active_fraction = (alpha + rba_ood > 0).float().mean()
+                          self.log(f"rba_diag/hinge_active_fraction{block_postfix}", active_fraction)
+
+        # Gap ID vs OOD 
+                          self.log(f"rba_diag/id_ood_gap{block_postfix}", rba_id.mean() - rba_ood.mean())
+
+        # La loss stessa
+                          self.log(f"logit_metrics/rba_loss{block_postfix}", rba_loss)
+                      
                     
-            # se non ci sono pixel OOD nel batch, rba_loss resta 0
-            # log (Wandb)
-                self.log(f"logit_metrics/rba_loss{block_postfix}", rba_loss, on_step=True, on_epoch=False)
-                self.log(f"logit_metrics/rba_ood_mean{block_postfix}", 
-                         rba_map[outlier_stack].mean() if outlier_stack.any() else 0.0,
-                         on_step=True, on_epoch=False)
 
         total_loss =  self.criterion.loss_total(losses_all_blocks, self.log)
         return total_loss + eim_loss*lambda_eim + logitnorm_loss*lambda_logitnorm + rba_loss*lambda_rba  # la loss restituita è la somma pesata
