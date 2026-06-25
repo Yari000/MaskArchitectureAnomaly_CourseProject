@@ -81,7 +81,7 @@ class MaskClassificationSemantic(LightningModule):
 
         self.init_metrics_semantic(ignore_idx, self.network.num_blocks + 1 if self.network.masked_attn_enabled else 1)
 
-    # fine tune only the classification head, freeze all the rest
+    # fine tune 
     def on_fit_start(self):
       # debug 
       for name, module in self.network.named_children():
@@ -95,8 +95,12 @@ class MaskClassificationSemantic(LightningModule):
       for param in self.network.class_head.parameters():
         param.requires_grad = True
 
-      # unfeeeze the learnable queries
+      # unfreeze the learnable queries
       for param in self.network.q.parameters():
+        param.requires_grad = True
+
+       # Sblocca mask head per rba finetuning
+      for param in self.network.mask_head.parameters():
         param.requires_grad = True
 
       # verify how many learnable params
