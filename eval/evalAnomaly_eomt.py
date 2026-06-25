@@ -193,7 +193,7 @@ def infer_single(model, img_tensor: torch.Tensor, img_size, device: str):
 
 # rejected by all inference
 
-def infer_single_rba(model, img_tensor, img_size, device):
+def infer_single_rba_query(model, img_tensor, img_size, device):
     """
     inference over the RbA method (rejected by all): a pixel is considered an anomaly if its rejected by 
     all queries that show high in-distribution confidence
@@ -242,6 +242,38 @@ def infer_single_rba(model, img_tensor, img_size, device):
     # anomaly = bassa appartenenza a qualsiasi maschera ID
     anomaly_rba = torch.prod(rejected_by_query, dim=0).cpu().numpy()  # Shape: (H, W)
     return anomaly_rba
+
+
+# Versione da paper di rba 
+
+def infer_single_rba(model, img_tensor, img_size, device):
+    dtype = torch.float16 if device != "cpu" else torch.float32
+    with torch.no_grad(), autocast(dtype=dtype, device_type=device):
+        imgs = [img_tensor.to(device)]
+        img_sizes = [img_tensor.shape[-2:]]
+        crops, origins = model.window_imgs_semantic(imgs)
+        mask_logits_per_layer, class_logits_per_layer = model(crops)
+
+        mask_logits = F.interpolate(
+            mask_logits_per_layer[-1], img_size,
+            mode="bilinear", align_corners=False
+        )
+
+        # Utilizza la pipeline ufficiale invece dell'einsum
+        crop_logits = model.to_per_pixel_logits_semantic(
+            mask_logits, class_logits_per_layer[-1]
+        )
+        logits = model.revert_window_logits_semantic(
+            crop_logits, origins, img_sizes
+        )
+        pixel_logits = logits[0].float()  # (C, H, W) — C=19 senza VOID
+
+        # Applica la formula RbA del paper
+        sigma = (torch.tanh(pixel_logits) + 1.0) / 2.0  # (C, H, W)
+        rba_score = -sigma.sum(dim=0)  # (H, W), in [-19, 0]
+        return rba_score.cpu().numpy()
+
+
 
 # GT remapping
 
