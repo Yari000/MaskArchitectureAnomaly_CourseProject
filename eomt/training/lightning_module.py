@@ -175,28 +175,15 @@ class LightningModule(lightning.LightningModule):
 
     def training_step(self, batch, batch_idx):
         imgs, targets = batch
-
-        # outlier exposure implementation
-        outlier_mask= []
-        for t in targets:
-          if "outlier_mask" in t:
-            outlier_mask.append(t.pop("outlier_mask")) # rumuove prima di passarlo 
-          else:
-            H,W = imgs.shape[-2:]
-            outlier_mask.append(torch.zeros(H, W, dtype= torch.bool, device= imgs.device))
-        
         mask_logits_per_block, class_logits_per_block = self(imgs)
 
         losses_all_blocks = {}
         # per fare fine tuning solo su una specifica area, disattivare un lambda (l=0)
-        lambda_rba = 0.01    # RBA loss weight
-        lambda_eim = 0.01    # LIR loss weight
+        lambda_LIR = 0.01    # LIR loss weight
         lambda_logitnorm = 0.01  # LogitNormRegularization loss weight
         tau_logitnorm = 1.0 / 16.77     # temperatura LogitNormRegularization (calcolata su una porzione di cityscapes)
-        rba_loss = torch.tensor(0.0, device=imgs.device)
-        eim_loss = torch.tensor(0.0, device=imgs.device) # initialize
+        LIR_loss = torch.tensor(0.0, device=imgs.device) # initialize
         logitnorm_loss = torch.tensor(0.0, device=imgs.device) # initialize
-        alpha= 5.0   # soglia per pixel ood (da paper rba)
 
         for i, (mask_logits, class_logits) in enumerate(
             list(zip(mask_logits_per_block, class_logits_per_block))
@@ -210,14 +197,13 @@ class LightningModule(lightning.LightningModule):
             losses = {f"{key}{block_postfix}": value for key, value in losses.items()}
             losses_all_blocks |= losses
 
-            # EIM loss implementation
+            # LIR loss implementation
+            # facciamo tutto sull'ultimo blocco
             if i == len(mask_logits_per_block)-1:
-        
-            # vorremmo valutare l'isotropia lungo la dimensione delle classi
+            # valutiamo l'isotropia lungo le classi
                 B,Q,C = class_logits.shape
             # reshape per trattare tutte le query come campioni indipendenti
                 logits_flat = class_logits.view(-1,C)
-
             # centriamo i logit rispetto alla media per calcolare la correlazione
                 logits_centered = logits_flat - logits_flat.mean(dim=0, keepdim= True)
 
@@ -228,141 +214,23 @@ class LightningModule(lightning.LightningModule):
                 correlation_matrix = covariance_matrix / (std.unsqueeze(0)*std.unsqueeze(1))
 
             # l'obiettivo dell'isotropia è spingere la correlazione extradiagonal a 0
-            # creiamo dunque una matrice eye 
                 identity = torch.eye(C, device=class_logits.device)
+            # la LIR loss è l'errore quadratico medio (MSE) tra correlazione e identità
+                LIR_loss = torch.mean((correlation_matrix - identity)**2)
+            # log Wandb
+                self.log(f"logit_metrics/LIR_loss{block_postfix}", LIR_loss, on_step=True, on_epoch=False)
 
-            # la EIM loss è l'errore quadratico medio (MSE) tra correlazione e identità
-                eim_loss = torch.mean((correlation_matrix - identity)**2)
-
-
-            # monitoriamo il valore sui grafici (WandB)
-                self.log(f"logit_metrics/eim_loss{block_postfix}", eim_loss, on_step=True, on_epoch=False)
-
-
-            # LogitNorm loss implementation 
-            # LogitNorm (Wei 2022) penalizza la norma dei logit per classe,
-            # disaccoppiando la "direzione" (info di classe) dalla "magnitudine" (|over|confidence).
+            # LogitNormRegularization loss implementation 
             # Calcoliamo la norma L2 dei class_logits per ogni query e la usiamo per
-            # normalizzare i logit, poi penalizziamo la norma stessa (o equivalentemente
-            # incoraggiamo norma costante = 1/tau).
+            # normalizzare i logit, poi penalizziamo la norma stessa (o equivalentemente incoraggiamo una norma costante = 1/tau).
                 logit_norms = class_logits.norm(dim=-1)  # (B, Q)
-
-            # la loss spinge la norma verso un valore target (1/tau), penalizzando
-            # deviazioni quadratiche dalla norma desiderata
                 target_norm = 1.0 / tau_logitnorm
                 logitnorm_loss = torch.mean((logit_norms - target_norm) ** 2)
-
             # log (WandB)
                 self.log(f"logit_metrics/logitnorm_loss{block_postfix}", logitnorm_loss, on_step=True, on_epoch=False)
 
-            if lambda_rba > 0 and i == len(mask_logits_per_block) - 1:
-
-    # stessa risoluzione usata a inferenza
-                 mask_logits_up = interpolate(
-                 mask_logits,
-                 self.img_size,
-                 mode="bilinear",
-                 align_corners=False
-                )
-
-    # stessa formula usata in infer_single_rba
-                 pixel_logits_rba = torch.einsum(
-                 "bqhw,bqc->bchw",
-                  torch.sigmoid(mask_logits_up),
-                  torch.softmax(class_logits, dim=-1)[..., :-1]
-                 )
-
-    # score RbA
-                 sigma_rba = (torch.tanh(pixel_logits_rba) + 1.0) / 2.0
-
-    # (B,H,W)
-                 rba_map_paper = -sigma_rba.sum(dim=1)
-
-                 outlier_stack = torch.stack(outlier_mask).to(imgs.device)
-
-                 if outlier_stack.any():
-
-                    rba_ood = rba_map_paper[outlier_stack]
-                    rba_id  = rba_map_paper[~outlier_stack]
-
-        # loss
-                    rba_loss = (
-                     torch.clamp(alpha + rba_ood, min=0.0) ** 2
-                    ).mean()
-
-        # ----------------------------
-        # DIAGNOSTICA RbA
-        # ----------------------------
-
-                    self.log(
-                     f"rba_diag/ood_mean{block_postfix}",
-                     rba_ood.mean()
-                    )
-
-                    self.log(
-                     f"rba_diag/ood_std{block_postfix}",
-                     rba_ood.std()
-                    )
-
-                    self.log(
-                     f"rba_diag/id_mean{block_postfix}",
-                     rba_id.mean()
-                    )
-
-                    self.log(
-                     f"rba_diag/id_std{block_postfix}",
-                     rba_id.std()
-                    )
-
-                    self.log(
-                     f"rba_diag/id_ood_gap{block_postfix}",
-                     rba_id.mean() - rba_ood.mean()
-                    )
-
-                    active_fraction = (
-                     (alpha + rba_ood) > 0
-                    ).float().mean()
-
-                    self.log(
-                     f"rba_diag/hinge_active_fraction{block_postfix}",
-                     active_fraction
-                    )
-
-                    self.log(
-                     f"logit_metrics/rba_loss{block_postfix}",
-                     rba_loss
-                    )
-
-                    self.log(
-                     f"rba_diag/rba_map_mean{block_postfix}",
-                     rba_map_paper.mean()
-                    )
-
-                    self.log(
-                     f"rba_diag/rba_map_min{block_postfix}",
-                     rba_map_paper.min()
-                    )
-
-                    self.log(
-                     f"rba_diag/rba_map_max{block_postfix}",
-                     rba_map_paper.max()
-                    )
-
-                    self.log(
-                     f"rba_diag/sigma_mean{block_postfix}",
-                     sigma_rba.mean()
-                    )
-
-                    self.log(
-                     f"rba_diag/ood_pixel_ratio{block_postfix}",
-                     outlier_stack.float().mean()
-                    )
-                    
-                      
-                    
-
         total_loss =  self.criterion.loss_total(losses_all_blocks, self.log)
-        return total_loss + eim_loss*lambda_eim + logitnorm_loss*lambda_logitnorm + rba_loss*lambda_rba  # la loss restituita è la somma pesata
+        return total_loss + LIR_loss*lambda_LIR + logitnorm_loss*lambda_logitnorm  # la loss restituita è la somma pesata
 
 
     def validation_step(self, batch, batch_idx=0):
