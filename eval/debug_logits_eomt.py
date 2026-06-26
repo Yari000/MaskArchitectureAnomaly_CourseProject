@@ -194,7 +194,7 @@ def overlay_heatmap(pil_img, score, title, alpha=0.55, cmap="hot"):
 if __name__ == "__main__":
     # ── configurazione ────────────────────────────────────────────────────────
     CONFIG   = "../eomt/configs/dinov2/cityscapes/semantic/eomt_base_640.yaml"
-    IMG_SIZE = (640, 640)
+    IMG_SIZE = (1024,1024)
     DEVICE   = "cuda" if torch.cuda.is_available() else "cpu"
 
     # immagini da visualizzare: (path_immagine, path_gt_opzionale, etichetta)
