@@ -1,7 +1,7 @@
 # CLASSE PER OUTLIER EXPOSURE 
 # Wrapper attorno a CityscapesSemantic che incolla patch OOD da COCO
 # sulle immagini di training. La outlier_mask viene aggiunta al dict_state
-# target come chiave "outlier_mask" (boolean, HxW)
+# target come chiave "ood_mask" (boolean, HxW)
 # Codice adattato al lightning-module
 
 import random
@@ -55,10 +55,10 @@ class CityscapesCOCOPaste(LightningDataModule):
         num_classes: int = 19,
         color_jitter_enabled: bool = True,
         scale_range: tuple[float, float] = (0.5, 2.0),
-        paste_prob: float = 0.5,
+        paste_prob: float = 0.6,
         num_patches_range: tuple[int, int] = (1, 3),
         min_area: int = 1000,
-        paste_scale_range: tuple[float, float] = (0.05, 0.2),
+        paste_scale_range: tuple[float, float] = (0.08, 0.3),
     ) -> None:
         super().__init__(
             path=path,
@@ -121,8 +121,8 @@ class CityscapesCOCOPaste(LightningDataModule):
     # Estrae una patch (rgb numpy HxWx3, mask binaria HxW) da COCO
     
     def _get_random_patch(self):
-        self._ensure_ann_list()
-
+      self._ensure_ann_list()
+      for _ in range(20):   # prova un po' di volte
         ann = random.choice(self._ann_list)
         file_name = self._img_id_to_file[ann["image_id"]]
         img_path = self.coco_img_dir / file_name
@@ -140,12 +140,18 @@ class CityscapesCOCOPaste(LightningDataModule):
         binary_mask = coco_mask_util.decode(rle).astype(bool)  # HxW
 
         # Ritaglia sul bounding box
-        x, y, w, h = [int(v) for v in ann["bbox"]]
-        x2, y2 = min(x + w, W_img), min(y + h, H_img)
+        x, y, w, h = map(int, ann["bbox"])
+        x2= min(x+w, W_img)
+        y2= min(y+h, H_img)
         patch_img = img[y:y2, x:x2]
         patch_mask = binary_mask[y:y2, x:x2]
 
+        # evitiamo patch quasi vuote
+        if patch_mask.sum() < 280:
+            continue
+
         return patch_img, patch_mask
+      raise RuntimeError("Unable ti sample a valid patch")
 
     
     # Incolla N patch COCO su img_tensor, aggiorna outlier_mask
@@ -164,31 +170,39 @@ class CityscapesCOCOPaste(LightningDataModule):
             except Exception:
                 continue
 
-            # Scala la patch
-            scale = random.uniform(*self.paste_scale_range)
-            new_h = max(1, int(H * scale))
-            orig_h, orig_w = patch_img.shape[:2]
-            if orig_h == 0 or orig_w == 0:
-                continue
-            new_w = max(1, int(orig_w * new_h / orig_h))
+            ph,pw = patch_img.shape[:2]
 
-            patch_img = cv2.resize(patch_img, (new_w, new_h))
+            # Scala la patch 
+            scale = random.uniform(*self.paste_scale_range)
+            h_target= int(H*scale)
+            w_target= int(pw/ph*h_target)
+
+            # non incolliamo patch troppo piccole
+            if h_target < 8 or w_target < 8:
+                continue
+
+            patch_img = cv2.resize(patch_img, (w_target, h_target), interpolation=cv2.INTER_LINEAR)
             patch_mask = cv2.resize(
-                patch_mask.astype(np.uint8), (new_w, new_h),
+                patch_mask.astype(np.uint8), (w_target, h_target),
                 interpolation=cv2.INTER_NEAREST
             ).astype(bool)
 
-            # Posizione random
-            if H - new_h <= 0 or W - new_w <= 0:
+            if patch_mask.sum() < 60:
                 continue
-            top = random.randint(0, H - new_h)
-            left = random.randint(0, W - new_w)
+            
+            top= random.randint(0, H-h_target)
+            left= random.randint(0, W-w_target)
 
-            # Incolla solo sui pixel della maschera
-            roi = img_np[top:top + new_h, left:left + new_w]
-            roi[patch_mask] = patch_img[patch_mask]
-            img_np[top:top + new_h, left:left + new_w] = roi
-            outlier_mask[top:top + new_h, left:left + new_w] |= patch_mask
+            roi = img_np[top:top+h_target,left:left+w_target]
+
+            # blending
+
+            alpha= cv2.GaussianBlur( patch_mask.astype(np.float32), (9,9), 0 )
+            alpha= alpha[...,None]
+
+            img_np[top:top+h_target,left:left+w_target]=roi.astype(np.uint8)
+
+            outlier_mask[top:top+h_target,left:left+w_target] |= patch_mask
 
         img_out = torch.from_numpy(img_np).permute(2, 0, 1)
         outlier_tensor = torch.from_numpy(outlier_mask)  # bool HxW
@@ -208,15 +222,30 @@ class CityscapesCOCOPaste(LightningDataModule):
 
         def __getitem__(self, idx):
             img, target = self.base[idx]
+            # clona il target per evitare corruzione database
+            target = {k: v.clone() if isinstance(v, torch.Tensor) else v
+                      for k, v in target.items()}
+            
             H, W = img.shape[-2:]
 
             if random.random() < self.paste_prob:
                 img, outlier_mask = self.paste_fn(img)
+                # Rimuovi dalla supervisione i pixel coperti dalla patch 00D
+                ood_mask_bool = outlier_mask.bool()
+                visible_mask= target["masks"].bool() & ~ood_mask_bool
+                valid = visible_masks.flatten(1).any(dim=1)
+                if not valid.any():
+                # Fallback, il paste ha distrutto tutta la supervisione
+                   target["ood_mask"] = torch.zeros(H, W, dtype=torch.bool)
+                   return img, target # ritorniamo l'immagine originale
+        
+                target["masks"] = tv_tensors.Mask(visible_masks[valid])
+                target["labels"] = target["labels"][valid]
+                target["is_crowd"] = target["is_crowd"][valid]
+                target["ood_mask"] = outlier_mask
             else:
-                outlier_mask = torch.zeros(H, W, dtype=torch.bool)
+                target["ood_mask"] = torch.zeros(H, W, dtype=torch.bool)
 
-            # Aggiunge outlier_mask al dict target 
-            target["outlier_mask"] = outlier_mask
             return img, target
 
    
