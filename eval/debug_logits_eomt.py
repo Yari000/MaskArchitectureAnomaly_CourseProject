@@ -1,3 +1,5 @@
+# scritp per printare heatmap di anomaly detection
+
 import os
 import sys
 sys.path.insert(0, "/content/MaskArchitectureAnomaly_CourseProject/eomt")
@@ -13,7 +15,7 @@ from PIL import Image
 from torch.amp.autocast_mode import autocast
 import yaml
 
-# ── ripreso da evalAnomaly.py ──────────────────────────────────────────────────
+# medesima struttura di evalAnomaly
 
 def load_model(config_path, device, img_size=None, num_classes=None):
     from huggingface_hub import hf_hub_download
@@ -94,13 +96,12 @@ def compute_scores(model, img_tensor, img_size, device):
         logits       = model.revert_window_logits_semantic(crop_logits, origins, img_sizes)
         pixel_logits = logits[0].float()  # [C, H, W]
 
-        # per RbA servono anche mask_logits rivertiti
+        # per RbA servono anche mask_logits reverted
         mask_logits_rev = model.revert_window_logits_semantic(
-            mask_logits, origins, img_sizes
-        )[0].float()                                # [Q, H, W]
+            mask_logits, origins, img_sizes )[0].float()                                # [Q, H, W]
         class_logits_q  = class_logits_per_layer[-1][0].float()  # [Q, C+1]
 
-    # ── baseline pixel-level ──────────────────────────────────────────────────
+    # baselines
     probs = torch.softmax(pixel_logits, dim=0)          # [C, H, W]
 
     msp     = (1.0 - probs.max(dim=0)[0]).cpu().numpy()
@@ -109,7 +110,7 @@ def compute_scores(model, img_tensor, img_size, device):
     T = 1.0
     energy  = (-T * torch.logsumexp(pixel_logits / T, dim=0)).cpu().numpy()
 
-    # ── RbA (formula da paper: tanh-based) ───────────────────────────────────
+    # RbA
     sigma    = (torch.tanh(pixel_logits) + 1.0) / 2.0   # [C, H, W]
     rba      = (-sigma.sum(dim=0)).cpu().numpy()          # [H, W]
 
@@ -122,7 +123,7 @@ def compute_scores(model, img_tensor, img_size, device):
     }
 
 
-# ── visualizzazione ────────────────────────────────────────────────────────────
+# visualizzazione immagini
 
 BASELINES = ["MSP", "Entropy", "MaxLogit", "Energy", "RbA"]
 CMAPS     = ["hot", "inferno", "plasma", "magma", "viridis"]
@@ -143,7 +144,7 @@ def visualize_image(pil_img, scores, title, gt_mask=None):
     gs = gridspec.GridSpec(n_rows, n_cols, figure=fig,
                            hspace=0.35, wspace=0.25)
 
-    # ── riga 0: immagine + GT ─────────────────────────────────────────────────
+    # riga 0: immagine + GT 
     ax_img = fig.add_subplot(gs[0, :2])
     ax_img.imshow(pil_img)
     ax_img.set_title("Input image")
@@ -156,7 +157,7 @@ def visualize_image(pil_img, scores, title, gt_mask=None):
         ax_gt.axis("off")
         plt.colorbar(im_gt, ax=ax_gt, fraction=0.046, pad=0.04)
 
-    # ── riga 1: heatmaps ──────────────────────────────────────────────────────
+    # riga 1: heatmaps 
     for i, (name, cmap) in enumerate(zip(BASELINES, CMAPS)):
         ax = fig.add_subplot(gs[1, i])
         score = scores[name]
@@ -201,10 +202,10 @@ def overlay_heatmap(pil_img, score, title, alpha=0.55, cmap="hot"):
     plt.close()
 
 
-# ── main ──────────────────────────────────────────────────────────────────────
+# MAIN
 
 if __name__ == "__main__":
-    # ── configurazione ────────────────────────────────────────────────────────
+    # configurazione 
     CONFIG   = "../eomt/configs/dinov2/cityscapes/semantic/eomt_base_640.yaml"
     IMG_SIZE = (1024,1024)
     DEVICE   = "cuda" if torch.cuda.is_available() else "cpu"
@@ -226,14 +227,14 @@ if __name__ == "__main__":
         ),
     ]
 
-    # ── carica modello ────────────────────────────────────────────────────────
+    # carica modello 
     print(f"Device: {DEVICE}")
     model, img_size = load_model(CONFIG, DEVICE, img_size=IMG_SIZE)
 
     input_resize = lambda pil: pil.resize((img_size[1], img_size[0]), Image.BILINEAR)
     gt_resize    = lambda pil: pil.resize((img_size[1], img_size[0]), Image.NEAREST)
 
-    # ── inferenza e plot ──────────────────────────────────────────────────────
+    # inferenza e plot 
     for img_path, gt_path, label in IMAGES:
         print(f"\n{'─'*60}")
         print(f"Image: {label}")
