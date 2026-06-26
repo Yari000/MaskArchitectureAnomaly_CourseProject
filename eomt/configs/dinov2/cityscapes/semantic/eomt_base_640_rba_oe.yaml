@@ -1,7 +1,8 @@
 ## CONFIG YAML per outlier exposure 
 
 trainer:
-  max_epochs: 107
+  max_epochs: 4
+  limit_train_batches: 150
   logger:
     class_path: lightning.pytorch.loggers.wandb.WandbLogger
     init_args:
@@ -9,11 +10,15 @@ trainer:
       project: "eomt"
       name: "cityscapes_semantic_eomt_rba_oe"
 model:
-  class_path: training.mask_classification_semantic.MaskClassificationSemantic
+  class_path: training.mask_classification_semantic_outexposure.MaskClassificationSemanticOE
   init_args:
-    attn_mask_annealing_enabled: True
+    attn_mask_annealing_enabled: False
     attn_mask_annealing_start_steps: [3317, 8292, 13268]
     attn_mask_annealing_end_steps: [6634, 11609, 16585]
+    lambda_rba: 0.01
+    rba_alpha: 5.0
+    rba_reduction: mean
+    freeze_heads_only: true
     network:
       class_path: models.eomt.EoMT
       init_args:
@@ -32,4 +37,4 @@ data:
     paste_prob: 0.5
     num_patches_range: [1, 3]
     min_area: 1000
-    paste_scale_range: [0.05, 0.2]
+    paste_scale_range: [0.08, 0.3]
