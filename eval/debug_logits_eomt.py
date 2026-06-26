@@ -168,7 +168,13 @@ def visualize_image(pil_img, scores, title, gt_mask=None):
         ax.axis("off")
         plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
-    plt.show()
+    safe_title = title.replace(" – ", "_").replace(" ", "_").replace("–", "_")
+    nome_file = f"griglia_{safe_title}.png"
+    
+    plt.savefig(nome_file, bbox_inches='tight', dpi=150)
+    print(f"Grafico griglia salvato in: {nome_file}")
+    
+    plt.close()
 
 
 def overlay_heatmap(pil_img, score, title, alpha=0.55, cmap="hot"):
@@ -186,7 +192,13 @@ def overlay_heatmap(pil_img, score, title, alpha=0.55, cmap="hot"):
     ax.set_title(title)
     ax.axis("off")
     plt.tight_layout()
-    plt.show()
+    
+    safe_title = title.replace(" – ", "_").replace(" ", "_").replace("–", "_")
+    nome_file = f"{safe_title}.png"
+    
+    plt.savefig(nome_file, bbox_inches='tight', dpi=150)
+    print(f"Overlay salvato in: {nome_file}")
+    plt.close()
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
