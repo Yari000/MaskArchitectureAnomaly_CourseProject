@@ -13,9 +13,7 @@ model:
   class_path: training.mask_classification_semantic_outexposure.MaskClassificationSemanticOE
   init_args:
     attn_mask_annealing_enabled: False
-    attn_mask_annealing_start_steps: [3317, 8292, 13268]
-    attn_mask_annealing_end_steps: [6634, 11609, 16585]
-    lambda_rba: 0.01
+    lambda_rba: 0.1
     rba_alpha: 5.0
     rba_reduction: mean
     freeze_heads_only: true
@@ -34,7 +32,10 @@ data:
     path: /content/drive/MyDrive/Anomaly_Segmentation_Datasets/Cityscapes
     coco_img_dir: /content/coco/val2017
     coco_ann_file: /content/coco/annotations/instances_val2017.json
-    paste_prob: 0.5
+    img_size: [640, 640]
+    batch_size: 2
+    num_workers: 2
+    paste_prob: 0.25
     num_patches_range: [1, 3]
     min_area: 1000
     paste_scale_range: [0.08, 0.3]
