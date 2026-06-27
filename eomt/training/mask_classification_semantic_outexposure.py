@@ -57,7 +57,6 @@ class MaskClassificationSemanticOE(MaskClassificationSemantic):
         freeze_heads_only: bool = True,
         **kwargs,
     ) -> None:
-        kwargs.setdefault("lr_scheduler", "none")
         # Costruiamo la classe base che contiene tutto
         super().__init__(*args, **kwargs)
         self.lambda_rba = lambda_rba
@@ -95,17 +94,8 @@ class MaskClassificationSemanticOE(MaskClassificationSemantic):
             lr=self.lr,
             weight_decay=self.weight_decay,
         )
-        scheduler_config = self._build_lr_scheduler_config(
-            optimizer=optimizer,
-            num_backbone_params=0,
-        )
-        if scheduler_config is None:
-            return optimizer
 
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": scheduler_config,
-        }
+        return optimizer
 
 
     def _extract_ood_masks(
@@ -174,7 +164,7 @@ class MaskClassificationSemanticOE(MaskClassificationSemantic):
             size=imgs.shape[-2:],
             device=imgs.device,
         )
-        rba_loss = rba_loss(
+        rba_loss_val = rba_loss(
             per_pixel_scores=per_pixel_scores,
             ood_mask=ood_masks,
             alpha=self.rba_alpha,
@@ -182,9 +172,7 @@ class MaskClassificationSemanticOE(MaskClassificationSemantic):
         )
 
         # la loss finale è la somma pesata 
-        total_loss = seg_loss + self.lambda_rba * rba_loss
-        self.log("losses/train_rba_loss", rba_loss, sync_dist=True, prog_bar=True)
-        self.log("losses/train_loss_total_oe", total_loss, sync_dist=True, prog_bar=True)
+        total_loss = seg_loss + self.lambda_rba * rba_loss_val
 
         # log Wandb
         self.log(
@@ -197,7 +185,7 @@ class MaskClassificationSemanticOE(MaskClassificationSemantic):
         )
         self.log(
             "losses_epoch/train_rba_loss",
-            rba_loss,
+            rba_loss_val,
             on_step=False,
             on_epoch=True,
             sync_dist=True,
