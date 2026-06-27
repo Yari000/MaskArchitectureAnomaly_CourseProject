@@ -13,6 +13,7 @@ from typing import Union
 import cv2
 import numpy as np
 import torch
+from torchvision import tv_tensors
 from PIL import Image
 from torch.utils.data import DataLoader
 from pycocotools import mask as coco_mask_util
@@ -55,8 +56,8 @@ class CityscapesCOCOPaste(LightningDataModule):
         num_classes: int = 19,
         color_jitter_enabled: bool = True,
         scale_range: tuple[float, float] = (0.5, 2.0),
-        paste_prob: float = 0.6,
-        num_patches_range: tuple[int, int] = (1, 3),
+        paste_prob: float = 0.2,
+        num_patches_range: tuple[int, int] = (1, 1),
         min_area: int = 1000,
         paste_scale_range: tuple[float, float] = (0.08, 0.3),
     ) -> None:
@@ -189,6 +190,10 @@ class CityscapesCOCOPaste(LightningDataModule):
 
             if patch_mask.sum() < 60:
                 continue
+
+            # se la patch è fuori scala, salta
+            if h_target >= H or w_target >= W:
+                continue  
             
             top= random.randint(0, H-h_target)
             left= random.randint(0, W-w_target)
@@ -233,13 +238,13 @@ class CityscapesCOCOPaste(LightningDataModule):
                 # Rimuovi dalla supervisione i pixel coperti dalla patch 00D
                 ood_mask_bool = outlier_mask.bool()
                 visible_mask= target["masks"].bool() & ~ood_mask_bool
-                valid = visible_masks.flatten(1).any(dim=1)
+                valid = visible_mask.flatten(1).any(dim=1)
                 if not valid.any():
                 # Fallback, il paste ha distrutto tutta la supervisione
                    target["ood_mask"] = torch.zeros(H, W, dtype=torch.bool)
                    return img, target # ritorniamo l'immagine originale
         
-                target["masks"] = tv_tensors.Mask(visible_masks[valid])
+                target["masks"] = tv_tensors.Mask(visible_mask[valid])
                 target["labels"] = target["labels"][valid]
                 target["is_crowd"] = target["is_crowd"][valid]
                 target["ood_mask"] = outlier_mask
