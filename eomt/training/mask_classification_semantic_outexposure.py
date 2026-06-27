@@ -9,7 +9,7 @@ def rba_loss(
     per_pixel_scores: torch.Tensor,
     ood_mask: torch.Tensor,
     alpha: float = 5.0,
-    reduction: str = "sum",
+    reduction: str = "mean",
 ) -> torch.Tensor:
     """
     Implementa la RBA loss (del paper) sui pixel OOD
@@ -35,6 +35,7 @@ def rba_loss(
     if reduction == "sum":
         return selected.sum()
     if reduction == "mean":
+        print("mean is currently used")
         return selected.mean()
     raise ValueError(f"Riduzione ignota: {reduction}")
 
@@ -53,7 +54,7 @@ class MaskClassificationSemanticOE(MaskClassificationSemantic):
         *args,
         lambda_rba: float = 0.1,
         rba_alpha: float = 5.0,
-        rba_reduction: str = "sum",
+        rba_reduction: str = "mean",
         freeze_heads_only: bool = True,
         **kwargs,
     ) -> None:
