@@ -52,7 +52,6 @@ def load_model(config_path: str, device: str, img_size=None, num_classes=None):
     if img_size is None:
         img_size = data_kwargs.get("img_size", (1024, 1024))  
     
-    # FIX 
     img_size = tuple(img_size)
     
     if num_classes is None:
@@ -109,7 +108,7 @@ def load_model(config_path: str, device: str, img_size=None, num_classes=None):
         warnings.warn("No logger name found in config — proceeding with random weights.")
         return model, img_size
 
-    # loading the weights from the local checkpoint
+    # loading the weights from the local checkpoint 
     ckpt_path = "/content/drive/MyDrive/eomt_weights/eomt_cityscapes.bin"
     print(f"Loading weights from: {ckpt_path}")
     state_dict = torch.load(ckpt_path, map_location=device, weights_only=True)
@@ -127,17 +126,18 @@ def load_model(config_path: str, device: str, img_size=None, num_classes=None):
     return model, img_size
 
 
-# inference for a single image
+# inference for a single image over various baselines
 
 def infer_single(model, img_tensor: torch.Tensor, img_size, device: str):
     """
     Run EoMT semantic inference on a single image tensor (C, H, W).
     NOTE: no external normalization, EoMT applies pixel_mean/pixel_std internally.
 
-    Returns three (H, W) float32 numpy arrays:
-        anomaly_msp     – 1 - max softmax probability  (MSP)
+    Returns four (H, W) float32 numpy arrays:
+        anomaly_msp     – 1 - max softmax probability   (MSP)
         anomaly_logit   – negative max logit            (MaxLogit)
         anomaly_entropy – predictive entropy            (Entropy)
+        anomaly_energy  - 
     """
     dtype = torch.float16 if device != "cpu" else torch.float32
 
@@ -148,7 +148,7 @@ def infer_single(model, img_tensor: torch.Tensor, img_size, device: str):
         # sliding-window preprocessing (official EoMT pipeline)
         crops, origins = model.window_imgs_semantic(imgs)
 
-        # forward — returns one entry per decoder layer
+        # forward returns one entry per decoder layer
         mask_logits_per_layer, class_logits_per_layer = model(crops)
 
         # use last layer (best quality)
@@ -187,11 +187,11 @@ def infer_single(model, img_tensor: torch.Tensor, img_size, device: str):
     T = 1.0
     anomaly_energy = (-T * torch.logsumexp( pixel_logits / T, dim=0 )).cpu().numpy()
 
-    # return also raw logits to evaluate temp scaling baseline outside of the loop
+    # return also raw logits to evaluate temp scaling baseline outside of the loop (faster)
     return anomaly_msp, anomaly_logit, anomaly_entropy, anomaly_energy, pixel_logits.cpu(), class_logits.cpu(), mask_probs.cpu()
 
 
-# rejected by all inference
+# rejected by all inference (query-level) 
 
 def infer_single_rba_query(model, img_tensor, img_size, device):
     """
@@ -211,11 +211,6 @@ def infer_single_rba_query(model, img_tensor, img_size, device):
         )
         class_logits = class_logits_per_layer[-1]  # (B, Q, num_classes+1)
 
-        # RbA: for every query is the prob of being into a ID class (excluding void/last classes)
-        # class_logits shape: (B, Q, C+1) — last class is VOID
-        # class_probs = torch.softmax(class_logits, dim=-1)  # (B, Q, C+1)
-        # id_probs    = class_probs[..., :-1].sum(dim=-1)    # (B, Q) — ID prob for the query
-
         # retrieve spacial geometry by getting toghether the crops
         mask_logits = model.revert_window_logits_semantic(mask_logits, origins, img_sizes)[0]  # (Q, H, W)
         class_logits = class_logits[0]  # (Q, num_classes + 1)
@@ -232,10 +227,6 @@ def infer_single_rba_query(model, img_tensor, img_size, device):
         # expand dimensions to abilitate pixel-to-pixel broadcasting
         id_probs = id_probs[:, None, None]  # Shape: (Q, 1, 1)
 
-        # RbA score per pixel: max su Q di (mask_prob * id_prob)
-        #id_probs    = id_probs[..., None, None]            # (B, Q, 1, 1)
-        #rba_score   = (mask_probs * id_probs).max(dim=1)[0]  # (B, H, W)
-
         # evaluate probs that a pixel DOES NOT belong to a valid class for the q-th query
         rejected_by_query = 1.0 - (mask_probs * id_probs)  # Shape: (Q, H, W)
 
@@ -244,7 +235,7 @@ def infer_single_rba_query(model, img_tensor, img_size, device):
     return anomaly_rba
 
 
-# Versione da paper di rba 
+# Versione da paper di rba (versione ufficiale)
 
 def infer_single_rba(model, img_tensor, img_size, device):
     dtype = torch.float16 if device != "cpu" else torch.float32
@@ -292,7 +283,7 @@ def remap_gt(ood_gts: np.ndarray, pathGT: str) -> np.ndarray:
     return ood_gts
 
 
-# main
+# MAIN
 
 def main():
     parser = ArgumentParser()
@@ -302,7 +293,9 @@ def main():
         nargs="+",
         help="Glob pattern for input images, e.g. 'path/to/images/*.png'",
     )
+    # add temperature arguments to the parser
     parser.add_argument("--temperature", type=float, nargs="+", default=[0.5, 0.75, 1.1, 1.25, 1.5])
+    parser.add_argument("--qtemperature", type=float, nargs="+", default=[2.0, 3.0, 4.0])
     parser.add_argument(
         "--config",
         default="../configs/dinov2/cityscapes/semantic/eomt_base_640.yaml",
@@ -349,7 +342,7 @@ def main():
     anomaly_score_list_rba     = []
     anomaly_score_list_energy  = []
     ood_gts_list               = []
-    valid_paths                = []  # track only images with ood pixels
+    valid_paths                = []  # track only images with ood pixels, datasets like FS include images w/o ood pixels
 
     pattern = os.path.expanduser(str(args.input[0]))
     paths = sorted(glob.glob(pattern))
@@ -374,7 +367,7 @@ def main():
         # convert to uint8 tensor (C, H, W) as expected by window_imgs_semantic
         img_tensor = torch.from_numpy(np.array(pil_img)).permute(2, 0, 1)  # uint8 (C,H,W)
 
-        anomaly_msp, anomaly_logit, anomaly_entropy, class_logit, mask_probs, anomaly_void = infer_single(
+        anomaly_msp, anomaly_logit, anomaly_entropy, anomaly_energy, pixel_logits, class_logits, mask_probs = infer_single(
             model, img_tensor, img_size, device
         )
         anomaly_rba = infer_single_rba(model, img_tensor, img_size, device)
@@ -408,7 +401,7 @@ def main():
             f"/content/cached_logits/{os.path.basename(path)}.pt"
         )
 
-        ood_gts_list.append(ood_gts)
+        ood_gts_list.append(ood_gts)                       # ground truth
         anomaly_score_list.append(anomaly_msp)
         anomaly_score_list_logit.append(anomaly_logit)
         anomaly_score_list_entropy.append(anomaly_entropy)
@@ -476,7 +469,7 @@ def main():
         compute_metrics(np.array(anomaly_energy_t),  ood_mask, ind_mask, f"Energy  T={t}")
     
     # query-level temp scaling (per alcuni dataset si è rivelata molto più efficace)
-    for t in args.temperature:
+    for t in args.qtemperature:
         # applicata alle sole baseline probabilistiche
         anomaly_msp_qt, anomaly_entropy_qt = [], []
         for path in valid_paths:
