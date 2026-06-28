@@ -233,6 +233,9 @@ def plot_ts_comparison(pil_img, scores_base, scores_qts, gt_mask=None, title="")
         col += 1
 
     plt.tight_layout()
+    safe_title = title.replace(" – ", "_").replace(" ", "_").replace("–", "_")
+    plt.savefig(f"ts_comparison_{safe_title}.png", bbox_inches="tight", dpi=150)
+    print(f"Saved: ts_comparison_{safe_title}.png")
     plt.show()
 
 
@@ -287,6 +290,9 @@ def plot_rba_failure(pil_img, scores, gt_mask=None, title="RbA failure case"):
         col += 1
 
     plt.tight_layout()
+    safe_title = title.replace(" – ", "_").replace(" ", "_").replace("–", "_")
+    plt.savefig(f"rba_failure_{safe_title}.png", bbox_inches="tight", dpi=150)
+    print(f"Saved: rba_failure_{safe_title}.png")
     plt.show()
 
 
@@ -328,6 +334,8 @@ def plot_query_ts_cross_dataset(
                          fraction=0.046, pad=0.04)
 
     plt.tight_layout()
+    plt.savefig("query_ts_cross_dataset.png", bbox_inches="tight", dpi=150)
+    print("Saved: query_ts_cross_dataset.png")
     plt.show()
 
 
