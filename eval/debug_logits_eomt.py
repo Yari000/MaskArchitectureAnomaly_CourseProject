@@ -120,7 +120,7 @@ def compute_scores(model, img_tensor, img_size, device):
         "MaxLogit": maxlogit,
         "Energy":   energy,
         "RbA":      rba,
-    }
+    }, pixel_logits.cpu(), class_logits_q.cpu(), mask_logits_rev.cpu()
 
 
 # visualizzazione immagini
@@ -202,6 +202,190 @@ def overlay_heatmap(pil_img, score, title, alpha=0.55, cmap="hot"):
     plt.close()
 
 
+def plot_ts_comparison(pil_img, scores_base, scores_qts, gt_mask=None, title=""):
+    """
+    Confronto visivo baseline vs query-TS.
+    scores_base e scores_qts sono dict con chiave 'MSP'.
+    """
+    fig, axes = plt.subplots(1, 4 if gt_mask is not None else 3, figsize=(18, 4))
+    fig.suptitle(title, fontsize=13, fontweight="bold")
+
+    axes[0].imshow(pil_img)
+    axes[0].set_title("Input image")
+    axes[0].axis("off")
+
+    col = 1
+    if gt_mask is not None:
+        axes[col].imshow(gt_mask, cmap="gray", vmin=0, vmax=1)
+        axes[col].set_title("GT (white = anomaly)")
+        axes[col].axis("off")
+        col += 1
+
+    for score, label in [
+        (scores_base["MSP"], "MSP  T=1.0\n(baseline)"),
+        (scores_qts["MSP"],  "MSP  query-T=4.0"),
+    ]:
+        s = (score - score.min()) / (score.max() - score.min() + 1e-8)
+        im = axes[col].imshow(s, cmap="hot", vmin=0, vmax=1)
+        axes[col].set_title(label)
+        axes[col].axis("off")
+        plt.colorbar(im, ax=axes[col], fraction=0.046, pad=0.04)
+        col += 1
+
+    plt.tight_layout()
+    plt.show()
+
+
+def compute_scores_query_ts(pixel_logits, class_logits, mask_probs, t):
+    """
+    Applica query-level temperature scaling a partire dai logit cachati.
+    pixel_logits: [C, H, W], class_logits: [Q, C+1], mask_probs: [Q, H, W]
+    """
+    class_probs_t    = torch.softmax(class_logits / t, dim=-1)   # [Q, C+1]
+    class_probs_id_t = class_probs_t[:, :-1]                      # [Q, C]
+    pixel_probs_t    = torch.einsum("qc,qhw->chw",
+                                    class_probs_id_t, mask_probs) # [C, H, W]
+
+    msp = (1.0 - pixel_probs_t.max(dim=0)[0]).numpy()
+
+    pixel_probs_norm = pixel_probs_t / (pixel_probs_t.sum(0, keepdim=True) + 1e-8)
+    entropy = (-torch.sum(
+        pixel_probs_norm * torch.log(pixel_probs_norm + 1e-8), dim=0
+    )).numpy()
+
+    return {"MSP": msp, "Entropy": entropy}
+
+
+def plot_rba_failure(pil_img, scores, gt_mask=None, title="RbA failure case"):
+    """
+    Mostra affiancati MSP (funziona) e RbA (fallisce) per evidenziare il problema.
+    """
+    fig, axes = plt.subplots(1, 4 if gt_mask is not None else 3, figsize=(18, 4))
+    fig.suptitle(title, fontsize=13, fontweight="bold")
+
+    axes[0].imshow(pil_img)
+    axes[0].set_title("Input image")
+    axes[0].axis("off")
+
+    col = 1
+    if gt_mask is not None:
+        axes[col].imshow(gt_mask, cmap="gray", vmin=0, vmax=1)
+        axes[col].set_title("GT (white = anomaly)")
+        axes[col].axis("off")
+        col += 1
+
+    for name, cmap, note in [
+        ("MSP", "hot",     "FPR@95 ≈ 0.55%  ✓"),
+        ("RbA", "viridis", "FPR@95 ≈ 99.95%  ✗"),
+    ]:
+        s = scores[name]
+        s_norm = (s - s.min()) / (s.max() - s.min() + 1e-8)
+        im = axes[col].imshow(s_norm, cmap=cmap, vmin=0, vmax=1)
+        axes[col].set_title(f"{name}\n{note}", fontsize=10)
+        axes[col].axis("off")
+        plt.colorbar(im, ax=axes[col], fraction=0.046, pad=0.04)
+        col += 1
+
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_query_ts_cross_dataset(
+    pil_road21, scores_road21_base, scores_road21_qts,
+    pil_obstacle, scores_obstacle_base, scores_obstacle_qts,
+):
+    """
+    2 righe x 3 colonne:
+      riga 0 → RoadAnomaly21  (query-TS funziona)
+      riga 1 → RoadObstacle21 (query-TS fallisce)
+    colonne: immagine | MSP T=1.0 | MSP query-T=4.0
+    """
+    fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+    fig.suptitle("Query-TS: dataset dove funziona vs dove fallisce",
+                 fontsize=13, fontweight="bold")
+
+    rows = [
+        (pil_road21,   scores_road21_base,   scores_road21_qts,
+         "RoadAnomaly21", "AUPRC 84.35%  FPR 3.63%  ✓"),
+        (pil_obstacle, scores_obstacle_base, scores_obstacle_qts,
+         "RoadObstacle21", "AUPRC 63.45%  FPR 100%  ✗"),
+    ]
+
+    for row_idx, (pil, base, qts, dataset_name, note) in enumerate(rows):
+        axes[row_idx, 0].imshow(pil)
+        axes[row_idx, 0].set_title(dataset_name, fontsize=10)
+        axes[row_idx, 0].axis("off")
+
+        for col_idx, (score, label) in enumerate([
+            (base["MSP"], "MSP  T=1.0"),
+            (qts["MSP"],  f"MSP  query-T=4.0\n{note}"),
+        ]):
+            s = (score - score.min()) / (score.max() - score.min() + 1e-8)
+            im = axes[row_idx, col_idx + 1].imshow(s, cmap="hot", vmin=0, vmax=1)
+            axes[row_idx, col_idx + 1].set_title(label, fontsize=9)
+            axes[row_idx, col_idx + 1].axis("off")
+            plt.colorbar(im, ax=axes[row_idx, col_idx + 1],
+                         fraction=0.046, pad=0.04)
+
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_prediction_comparison(pil_img, pixel_logits, scores, gt_mask=None, title=""):
+    """
+    4 pannelli: immagine originale | segmentation prediction | GT mask | anomaly map (MSP)
+    pixel_logits: [C, H, W] tensor CPU
+    """
+    # palette Cityscapes (19 classi)
+    CITYSCAPES_COLORS = np.array([
+        [128, 64,128], [244, 35,232], [ 70, 70, 70], [102,102,156],
+        [190,153,153], [153,153,153], [250,170, 30], [220,220,  0],
+        [107,142, 35], [152,251,152], [ 70,130,180], [220, 20, 60],
+        [255,  0,  0], [  0,  0,142], [  0,  0, 70], [  0, 60,100],
+        [  0, 80,100], [  0,  0,230], [119, 11, 32]
+    ], dtype=np.uint8)
+
+    pred_class = pixel_logits.argmax(dim=0).numpy()          # [H, W]
+    pred_color = CITYSCAPES_COLORS[pred_class % 19]          # [H, W, 3]
+
+    n_cols = 4 if gt_mask is not None else 3
+    fig, axes = plt.subplots(1, n_cols, figsize=(5 * n_cols, 4))
+    fig.suptitle(title, fontsize=13, fontweight="bold")
+
+    # col 0 — immagine originale
+    axes[0].imshow(pil_img)
+    axes[0].set_title("Input image")
+    axes[0].axis("off")
+
+    # col 1 — segmentation prediction
+    axes[1].imshow(pred_color)
+    axes[1].set_title("Semantic prediction")
+    axes[1].axis("off")
+
+    col = 2
+    # col 2 — GT mask (opzionale)
+    if gt_mask is not None:
+        axes[col].imshow(gt_mask, cmap="gray", vmin=0, vmax=1)
+        axes[col].set_title("GT anomaly mask")
+        axes[col].axis("off")
+        col += 1
+
+    # col 3 — anomaly map MSP
+    msp = scores["MSP"]
+    msp_norm = (msp - msp.min()) / (msp.max() - msp.min() + 1e-8)
+    im = axes[col].imshow(msp_norm, cmap="hot", vmin=0, vmax=1)
+    axes[col].set_title("Anomaly map (MSP)")
+    axes[col].axis("off")
+    plt.colorbar(im, ax=axes[col], fraction=0.046, pad=0.04)
+
+    plt.tight_layout()
+    safe_title = title.replace(" – ", "_").replace(" ", "_").replace("–", "_")
+    plt.savefig(f"pred_comparison_{safe_title}.png", bbox_inches="tight", dpi=150)
+    print(f"Saved: pred_comparison_{safe_title}.png")
+    plt.close()
+
+
+
 # MAIN
 
 if __name__ == "__main__":
@@ -221,9 +405,9 @@ if __name__ == "__main__":
         ),
         (
             "/content/drive/MyDrive/Anomaly_Segmentation_Datasets/"
-            "Validation_Dataset/fs_static/images/2.jpg",
+            "Validation_Dataset/RoadObsticle21/images/5.webp",
             None,
-            "fs_static – img 2 (normale)",
+            "RoadObsticle21 – img 5 ",
         ),
     ]
 
@@ -233,6 +417,8 @@ if __name__ == "__main__":
 
     input_resize = lambda pil: pil.resize((img_size[1], img_size[0]), Image.BILINEAR)
     gt_resize    = lambda pil: pil.resize((img_size[1], img_size[0]), Image.NEAREST)
+
+   
 
     # inferenza e plot 
     for img_path, gt_path, label in IMAGES:
@@ -250,14 +436,35 @@ if __name__ == "__main__":
                 gt_raw = np.where(gt_raw == 2, 1, gt_raw)
             gt_mask = (gt_raw == 1).astype(np.uint8)
 
-        scores = compute_scores(model, img_tensor, img_size, DEVICE)
+        scores, pixel_logits, class_logits, mask_probs = compute_scores(model, img_tensor, img_size, DEVICE)
 
         # 1. griglia con tutte le heatmap
         visualize_image(pil_img, scores, title=label, gt_mask=gt_mask)
+
+        plot_prediction_comparison(pil_img, pixel_logits, scores, gt_mask=gt_mask, title=label)
 
         # 2. overlay MSP e RbA sull'immagine (le due più informative visivamente)
         for name in ("MSP", "RbA"):
             overlay_heatmap(pil_img, scores[name],
                             title=f"Overlay {name} – {label}")
 
+        scores_qts = compute_scores_query_ts(pixel_logits, class_logits, mask_probs, t=4.0)
+
+# figura 1 — comparativa TS (solo su RoadAnomaly21)
+        if "RoadAnomaly21" in img_path:
+            pil_road= pil_img
+            scores_road= scores
+            scores_road_q= scores_qts
+            plot_ts_comparison(pil_img, scores, scores_qts, gt_mask=gt_mask,
+                                title=f"Baseline vs Query-TS — {label}")
+
+# figura 2 — fallimento RbA (su RoadObstacle21 o fs_static)
+        if "RoadObsticle21" in img_path or "fs_static" in img_path:
+            pil_obs= pil_img
+            scores_obs= scores
+            scores_obs_q= scores_qts
+            plot_rba_failure(pil_img, scores, gt_mask=gt_mask, title=f"RbA failure — {label}")
+
         torch.cuda.empty_cache()
+   
+plot_query_ts_cross_dataset(pil_road, scores_road, scores_road_q, pil_obs, scores_obs, scores_obs_q)
