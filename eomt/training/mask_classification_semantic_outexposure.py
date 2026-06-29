@@ -26,6 +26,7 @@ def rba_loss(
         return per_pixel_scores.new_zeros(())
 
     # Tanh comprime i valori e rende il processo numericamente stabile
+    # nota: la formula rimane uguale a quella del paper (e a quella usata ad inferenza) a meno di riscalamenti e traslazioni per costanti
     score = torch.tanh(per_pixel_scores)
     rba = -score.sum(dim=1)
     # hinge loss quadratica che penalizza i pixel sotto-margine
@@ -42,7 +43,7 @@ def rba_loss(
 
 class MaskClassificationSemanticOE(MaskClassificationSemantic):
     """
-    Estensione di maskclassificationsemantic+
+    Estensione di maskclassificationsemantic con l'aggiunta di
     - lambda_rba: peso della loss 
     - rba_alpha: margine della hinge loss
     - il training_step() restituisce la loss totale
@@ -67,9 +68,10 @@ class MaskClassificationSemanticOE(MaskClassificationSemantic):
 
         if freeze_heads_only:
             # Applichiamo il freeze da paper (solo mask e class head unfrozen)
-            self.freeze_all_but_heads()
+            self.freeze()
 
-    def freeze_all_but_heads(self) -> None:
+    def freeze(self) -> None:
+        """ congela tutto tranne mask e class head """
 
         for param in self.network.parameters():
             param.requires_grad = False
@@ -106,8 +108,7 @@ class MaskClassificationSemanticOE(MaskClassificationSemantic):
         device: torch.device,
     ) -> torch.Tensor:
         """
-        Estrae e riscala le oodmask, passando altezza e larghezza attese
-        
+        Estrae e riscala le ood_mask, passando altezza e larghezza attese
         """
 
         masks = []
@@ -125,7 +126,7 @@ class MaskClassificationSemanticOE(MaskClassificationSemantic):
 
         return torch.stack(masks, dim=0)
 
-    # Analogo del train step in lightning module
+    # Analogo del train_step in lightning module con l'addizione della rba loss
     def training_step(self, batch, batch_idx):
 
         imgs, targets = batch
@@ -147,7 +148,7 @@ class MaskClassificationSemanticOE(MaskClassificationSemantic):
                 f"{key}{block_postfix}": value for key, value in losses.items()
             }
 
-        # loss standard di segmmentation
+        # loss standard di segmentation
         seg_loss = self.criterion.loss_total(losses_all_blocks, self.log)
 
         # Usiamo l'ultimo blocco per rba loss
@@ -175,7 +176,7 @@ class MaskClassificationSemanticOE(MaskClassificationSemantic):
         # la loss finale è la somma pesata 
         total_loss = seg_loss + self.lambda_rba * rba_loss_val
 
-        # log Wandb
+        # log Wandb per analisi e diagnostica
         self.log(
             "losses_epoch/train_loss_total_oe",
             total_loss,
@@ -198,6 +199,7 @@ class MaskClassificationSemanticOE(MaskClassificationSemantic):
             on_epoch=True,
             sync_dist=True,
         )
+        # ulteriore diagnostica id//ood distribution
         with torch.no_grad():
              if ood_masks.any():
                 rba_scores = -torch.tanh(per_pixel_scores).sum(dim=1)
