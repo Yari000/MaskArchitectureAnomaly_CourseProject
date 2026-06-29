@@ -178,12 +178,6 @@ class LightningModule(lightning.LightningModule):
         mask_logits_per_block, class_logits_per_block = self(imgs)
 
         losses_all_blocks = {}
-        # per fare fine tuning solo su una specifica area, disattivare un lambda (l=0)
-        lambda_LIR = 0.01    # LIR loss weight
-        lambda_logitnorm = 0.01  # LogitNormRegularization loss weight
-        tau_logitnorm = 1.0 / 16.77     # temperatura LogitNormRegularization (calcolata su una porzione di cityscapes)
-        LIR_loss = torch.tensor(0.0, device=imgs.device) # initialize
-        logitnorm_loss = torch.tensor(0.0, device=imgs.device) # initialize
 
         for i, (mask_logits, class_logits) in enumerate(
             list(zip(mask_logits_per_block, class_logits_per_block))
@@ -197,40 +191,8 @@ class LightningModule(lightning.LightningModule):
             losses = {f"{key}{block_postfix}": value for key, value in losses.items()}
             losses_all_blocks |= losses
 
-            # LIR loss implementation
-            # facciamo tutto sull'ultimo blocco
-            if i == len(mask_logits_per_block)-1:
-            # valutiamo l'isotropia lungo le classi
-                B,Q,C = class_logits.shape
-            # reshape per trattare tutte le query come campioni indipendenti
-                logits_flat = class_logits.view(-1,C)
-            # centriamo i logit rispetto alla media per calcolare la correlazione
-                logits_centered = logits_flat - logits_flat.mean(dim=0, keepdim= True)
-
-            # calcoliamo la covarianza empirica [C,C]
-            # rappresentiamo quanto le classi si sovrappongano geometricamente
-                covariance_matrix = torch.matmul(logits_centered.t(), logits_centered) / (B*Q-1+1e-7)
-                std = torch.sqrt(torch.diag(covariance_matrix)+1e-7)
-                correlation_matrix = covariance_matrix / (std.unsqueeze(0)*std.unsqueeze(1))
-
-            # l'obiettivo dell'isotropia è spingere la correlazione extradiagonal a 0
-                identity = torch.eye(C, device=class_logits.device)
-            # la LIR loss è l'errore quadratico medio (MSE) tra correlazione e identità
-                LIR_loss = torch.mean((correlation_matrix - identity)**2)
-            # log Wandb
-                self.log(f"logit_metrics/LIR_loss{block_postfix}", LIR_loss, on_step=True, on_epoch=False)
-
-            # LogitNormRegularization loss implementation 
-            # Calcoliamo la norma L2 dei class_logits per ogni query e la usiamo per
-            # normalizzare i logit, poi penalizziamo la norma stessa (o equivalentemente incoraggiamo una norma costante = 1/tau).
-                logit_norms = class_logits.norm(dim=-1)  # (B, Q)
-                target_norm = 1.0 / tau_logitnorm
-                logitnorm_loss = torch.mean((logit_norms - target_norm) ** 2)
-            # log (WandB)
-                self.log(f"logit_metrics/logitnorm_loss{block_postfix}", logitnorm_loss, on_step=True, on_epoch=False)
-
         total_loss =  self.criterion.loss_total(losses_all_blocks, self.log)
-        return total_loss + LIR_loss*lambda_LIR + logitnorm_loss*lambda_logitnorm  # la loss restituita è la somma pesata
+        return total_loss 
 
 
     def validation_step(self, batch, batch_idx=0):
