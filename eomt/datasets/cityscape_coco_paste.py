@@ -39,6 +39,9 @@ class CityscapesCOCOPaste(LightningDataModule):
     """
 
     # Categorie OOD esplicite, semanticamente distanti da Cityscapes per accentuare l'esposizione
+    # un approccio più "conservativo" -escludere le sole categorie in comune- è stato considerato, ma non attuato vista 
+    # l'impossibilità di allenare il modello per tante epoche su tante immagini cityscapes.
+    
     _OOD_CATEGORIES = (
         "elephant", "giraffe", "zebra", "bear", "couch",
         "chair", "toaster", "microwave", "banana", "apple", "backpack",
