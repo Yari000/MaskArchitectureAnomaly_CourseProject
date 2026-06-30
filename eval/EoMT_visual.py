@@ -344,7 +344,7 @@ def plot_prediction_comparison(pil_img, pixel_logits, scores, gt_mask=None, titl
     4 pannelli: immagine originale | segmentation prediction | GT mask | anomaly map (MSP)
     pixel_logits: [C, H, W] tensor CPU
     """
-    # palette Cityscapes (19 classi)
+    # palette Cityscapes (19 classi) analogo a eval_cityscapes_color.py
     CITYSCAPES_COLORS = np.array([
         [128, 64,128], [244, 35,232], [ 70, 70, 70], [102,102,156],
         [190,153,153], [153,153,153], [250,170, 30], [220,220,  0],
