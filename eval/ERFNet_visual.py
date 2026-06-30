@@ -1,7 +1,3 @@
-# In questo file vorrei testare il comportamento di ErfNet e produrre una prima anomaly map, per capire se è
-# possibile identificare le anomalie in questo modo Per fare questo, prendo un'immagine di test, la passo attraverso
-# il modello e prendo i logits (output prima della softmax) per ogni pixel. Poi, confronto questi logits con quelli
-# di un'immagine normale (senza anomalie) per vedere se ci sono differenze significative.
 
 import torch
 import torch.nn as nn
@@ -52,7 +48,7 @@ def get_logits(image_path):
     return logits.squeeze(0)  # Remove batch dimension
 
 
-# Example usage
+
 normal_image_path = "/Users/andrealops/Downloads/Validation_Dataset/fs_static/images/2.jpg"
 anomalous_image_path = "/Users/andrealops/Downloads/Validation_Dataset/RoadAnomaly21/images/8.png"
 normal_logits = get_logits(normal_image_path)
